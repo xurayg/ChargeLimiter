@@ -18,3 +18,5 @@ NSDictionary* CLCreateExport(NSDictionary* battery, NSError** error);
 NSDictionary* CLStorageInfo(void);
 NSDictionary* CLReadServiceState(void);
 BOOL CLWriteServiceState(NSDictionary* state, NSError** error);
+NSDictionary* CLReadWatchdogState(void);
+BOOL CLWriteWatchdogState(NSDictionary* state, NSError** error);

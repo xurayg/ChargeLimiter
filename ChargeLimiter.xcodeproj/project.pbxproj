@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A14C00000000000000000001 /* watchdog.mm in Sources */ = {isa = PBXBuildFile; fileRef = A14C00000000000000000003 /* watchdog.mm */; };
+        A14C00000000000000000002 /* watchdog.mm in Sources */ = {isa = PBXBuildFile; fileRef = A14C00000000000000000003 /* watchdog.mm */; };
 		A13C00000000000000000012 /* diagnostics.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000010 /* diagnostics.mm */; };
 		A13C00000000000000000013 /* diagnostics.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000010 /* diagnostics.mm */; };
 		A13C00000000000000000014 /* diagnostics.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000010 /* diagnostics.mm */; };
@@ -93,6 +95,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        A14C00000000000000000003 /* watchdog.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = watchdog.mm; sourceTree = "<group>"; };
+        A14C00000000000000000004 /* watchdog.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = watchdog.h; sourceTree = "<group>"; };
 		A13C00000000000000000010 /* diagnostics.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = diagnostics.mm; sourceTree = "<group>"; };
 		A13C00000000000000000011 /* diagnostics.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = diagnostics.h; sourceTree = "<group>"; };
 		A13C00000000000000000005 /* NativeUI.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = NativeUI.mm; sourceTree = "<group>"; };
@@ -260,6 +264,8 @@
 				A13C00000000000000000007 /* storage.mm */,
 				A13C00000000000000000008 /* storage.h */,
 				A13C00000000000000000010 /* diagnostics.mm */,
+                A14C00000000000000000003 /* watchdog.mm */,
+                A14C00000000000000000004 /* watchdog.h */,
 				A13C00000000000000000011 /* diagnostics.h */,
 
 				18658A832BCF772D00207EF3 /* ui.h */,
@@ -482,7 +488,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/ChargeLimiter/ChargeLimiter.entitlements\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon # for trollstore\n\n";
+			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/ChargeLimiter/ChargeLimiter.entitlements\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon # for trollstore\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterWatchdog\n\n";
 		};
 		18C123E02C8C08CB00FAAC6C /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -499,7 +505,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/ChargeLimiter/ChargeLimiter.entitlements\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon\n\n";
+			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/ChargeLimiter/ChargeLimiter.entitlements\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterWatchdog\n\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -538,6 +544,7 @@
 				18C123E82C8C09A400FAAC6C /* daemon.mm in Sources */,
 				A13C00000000000000000009 /* storage.mm in Sources */,
 				A13C00000000000000000014 /* diagnostics.mm in Sources */,
+                A14C00000000000000000001 /* watchdog.mm in Sources */,
 
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -550,6 +557,7 @@
 				18C123CB2C8C08CB00FAAC6C /* daemon.mm in Sources */,
 				A13C0000000000000000000A /* storage.mm in Sources */,
 				A13C00000000000000000015 /* diagnostics.mm in Sources */,
+                A14C00000000000000000002 /* watchdog.mm in Sources */,
 
 			);
 			runOnlyForDeploymentPostprocessing = 0;

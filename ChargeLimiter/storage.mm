@@ -143,7 +143,7 @@ NSDictionary* CLCreateExport(NSDictionary* battery, NSError** error) {
     if (!CLDirectory(directory, error)) return nil;
     NSData* plist = [NSPropertyListSerialization dataWithPropertyList:config format:NSPropertyListXMLFormat_v1_0 options:0 error:error];
     NSData* json = [NSJSONSerialization dataWithJSONObject:config options:NSJSONWritingPrettyPrinted error:error];
-    NSData* state = [NSJSONSerialization dataWithJSONObject:@{@"exported_at": [[NSISO8601DateFormatter new] stringFromDate:NSDate.date], @"battery": battery ?: @{}, @"service":CLReadServiceState(), @"storage_directory": @CL_DATA_DIRECTORY} options:NSJSONWritingPrettyPrinted error:error];
+    NSData* state = [NSJSONSerialization dataWithJSONObject:@{@"exported_at": [[NSISO8601DateFormatter new] stringFromDate:NSDate.date], @"battery": battery ?: @{}, @"service":CLReadServiceState(), @"watchdog":CLReadWatchdogState(), @"storage_directory": @CL_DATA_DIRECTORY} options:NSJSONWritingPrettyPrinted error:error];
     if (!plist || !json || !state) return nil;
     NSDictionary* payload = @{@"configuration.plist":plist, @"configuration.json":json, @"battery.json":state};
     for (NSString* fileName in payload) {
@@ -179,7 +179,7 @@ NSDictionary* CLStorageInfo(void) {
         [exports addObject:@{@"name":name, @"directory":directory, @"download_prefix":[NSString stringWithFormat:@"/exports/%@/", name], @"files":files}];
     }
     NSArray* revisions = [NSFileManager.defaultManager contentsOfDirectoryAtPath:CLPath(@"ConfigHistory") error:nil];
-    return @{@"directory":@CL_DATA_DIRECTORY, @"configuration_revisions":@(revisions.count), @"exports":exports, @"service":CLReadServiceState()};
+    return @{@"directory":@CL_DATA_DIRECTORY, @"configuration_revisions":@(revisions.count), @"exports":exports, @"service":CLReadServiceState(), @"watchdog":CLReadWatchdogState()};
 }
 NSDictionary* CLReadServiceState(void) {
     NSData* data = [NSData dataWithContentsOfFile:CLPath(@"service-state.json")];
@@ -189,6 +189,18 @@ NSDictionary* CLReadServiceState(void) {
 BOOL CLWriteServiceState(NSDictionary* state, NSError** error) {
     NSData* data = [NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:error];
     NSString* path = CLPath(@"service-state.json");
+    if (!data || ![data writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
+    CLSetPermissions(path, NO);
+    return YES;
+}
+NSDictionary* CLReadWatchdogState(void) {
+    NSData* data = [NSData dataWithContentsOfFile:CLPath(@"watchdog-state.json")];
+    id state = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return [state isKindOfClass:NSDictionary.class] ? state : @{};
+}
+BOOL CLWriteWatchdogState(NSDictionary* state, NSError** error) {
+    NSData* data = [NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:error];
+    NSString* path = CLPath(@"watchdog-state.json");
     if (!data || ![data writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
     CLSetPermissions(path, NO);
     return YES;

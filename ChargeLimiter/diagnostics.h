@@ -12,6 +12,9 @@
 
 // Explanations describe observable policy/command evidence, never infer hardware faults.
 NSDictionary* CLChargingExplanation(NSDictionary* config, NSDictionary* battery, NSDictionary* commands, BOOL hasUPS);
+// Same plan is used by startup, battery events and periodic checks. Missing keys
+// mean no command; the hysteresis band preserves the current charging state.
+NSDictionary* CLChargingControlPlan(NSDictionary* config, NSDictionary* battery, NSDictionary* previous, BOOL hasUPS, BOOL startup);
 
 @interface CLServiceDiagnostics : NSObject
 @property(nonatomic, readonly, copy) NSDictionary* state;

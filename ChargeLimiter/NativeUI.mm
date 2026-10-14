@@ -525,6 +525,7 @@ static NSDictionary* CLRow(NSString* title, NSString* key, NSString* type) {
         self.sections = @[
             @{ @"title":CLText(@"查看与导出", @"Inspect and export"), @"rows":@[
                 CLRow(CLText(@"查看日志", @"View log"), @"log", @"action"),
+                CLRow(CLText(@"服务与看门狗记录", @"Service and watchdog records"), @"recovery", @"action"),
                 CLRow(CLText(@"查看已保存配置", @"View saved configuration"), @"config", @"action"),
                 CLRow(CLText(@"导出日志与配置", @"Export log and configuration"), @"export", @"action") ]},
             @{ @"title":CLText(@"设备持久存储", @"Persistent device storage"), @"rows":@[
@@ -594,6 +595,7 @@ static NSDictionary* CLRow(NSString* title, NSString* key, NSString* type) {
         CLSettingSwitch* control = [CLSettingSwitch new];
         control.key = row[@"key"];
         control.on = [([type isEqualToString:@"manual"] ? self.battery : self.config)[control.key] boolValue];
+        if ([control.key isEqualToString:@"IsCharging"]) control.on = control.on && ![self.battery[@"PredictiveChargingInhibit"] boolValue];
         control.enabled = self.serviceAvailable && !self.changing && !self.refreshing;
         control.accessibilityLabel = row[@"title"];
         [control addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventValueChanged];
@@ -665,6 +667,11 @@ static NSDictionary* CLRow(NSString* title, NSString* key, NSString* type) {
     }
     else if ([type isEqualToString:@"history"]) [self showText:CLPretty(row[@"sample"]) title:CLText(@"记录详情", @"Record details") api:nil];
     else if ([key isEqualToString:@"log"]) [self showText:nil title:CLText(@"日志（最近 256 KB）", @"Log (latest 256 KB)") api:@"get_log"];
+    else if ([key isEqualToString:@"recovery"]) {
+        NSDictionary* watchdog = CLReadWatchdogState();
+        NSString* intro = CLText(@"服务启动即判断充电条件，运行时每 20 秒检查一次。看门狗独立检查服务响应，连续失败时尝试重启，多次恢复失败后尝试解除停充/禁流。以下是最近保存的记录；心跳过期不代表进程仍在运行。\n\n", @"Control checks run at startup and every 20 seconds. The independent watchdog checks service responses, retries recovery and attempts system-charging fallback after repeated failures. These are saved records; an expired heartbeat does not prove the process is still running.\n\n");
+        [self showText:[intro stringByAppendingString:CLPretty(@{@"service":CLReadServiceState(), @"watchdog":watchdog})] title:CLText(@"服务与看门狗记录", @"Service and watchdog records") api:nil];
+    }
     else if ([key isEqualToString:@"config"]) [self showText:nil title:CLText(@"已保存配置", @"Saved configuration") api:@"get_saved_conf"];
     else if ([key isEqualToString:@"batteryDetails"]) [self showText:nil title:CLText(@"电池与电源信息", @"Battery and adapter") api:@"get_bat_info"];
     else if ([key isEqualToString:@"export"]) [self createExport];

@@ -1,6 +1,14 @@
 ## Charging explanations and service lifecycle
 
-Tap Automatic control on the Charging tab for policy blockers, power-source reports, failed charge/inflow requests, pending reports, the 120-second warning, or no recorded start request. Explanation category changes are logged once. An unknown cause remains unknown; reports do not prove a hardware fault. Battery events trigger automatic control; settings changes and refreshes only read state.
+Control evaluates immediately at startup and every 20 seconds, independently of battery events and UI refresh frequency. Edge mode preserves charging state between thresholds; temperature and critical-capacity priorities remain in place. Manual changes can be overridden by the next automatic check.
+
+ChargeLimiterWatchdog has a separate executable/process name, so killing ChargeLimiterDaemon by name leaves the watchdog available. A separate watchdog checks service JSON responses and process identity every 10 seconds. Three consecutive failures trigger recovery, with retry delays of 10, 20, 40 and 120 seconds. Continued failure after three recovery attempts triggers a best-effort reset of app charging inhibition, inflow disablement and thermal simulation. Fallback requires exclusive ownership of the service control lease and API success is not proof of physical charging. The saved watchdog-state.json record is available in Diagnostics and included in exports. Logs and configuration remain persistent.
+
+The deb service and watchdog are separate launchd jobs. TrollStore starts the watchdog through the app; a running service attempts to relaunch the watchdog once a minute. Process locks prevent duplicates, and PID, executable path and process birth time are verified before terminating a hung service. The watchdog exits if its executable is replaced or removed. TrollStore can still lose both processes; reopen the app after a reboot. Background operation cannot be guaranteed.
+
+Tests: python3 Tests/run_diagnostics_tests.py, python3 Tests/run_watchdog_tests.py, python3 Tests/run_storage_tests.py.
+
+Tap Automatic control on the Charging tab for policy blockers, power-source reports, failed charge/inflow requests, pending reports, the 120-second warning, or no recorded start request. Explanation category changes are logged once. An unknown cause remains unknown; reports do not prove a hardware fault. Startup, battery events and periodic checks evaluate automatic control; refreshing only reads state.
 
 A forced kill here refers primarily to ChargeLimiterDaemon. Closing the UI normally leaves the rootful deb launchd service running. A foreground app can log connection loss and the next service start can detect an unclean exit; SIGKILL cannot write a log at the instant of termination.
 

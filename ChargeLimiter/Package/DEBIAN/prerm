@@ -1,9 +1,9 @@
 #!/bin/bash
 
-/Applications/ChargeLimiter.app/ChargeLimiterDaemon reset
+launchctl unload /Library/LaunchDaemons/chaoge.ChargeLimiter.watchdog.plist
 launchctl unload /Library/LaunchDaemons/chaoge.ChargeLimiter.plist
-killall -9 ChargeLimiter ChargeLimiterDaemon
+killall -9 ChargeLimiter ChargeLimiterDaemon ChargeLimiterWatchdog >/dev/null 2>&1
+/Applications/ChargeLimiter.app/ChargeLimiterDaemon reset
 uicache mobile
 
 exit 0
-

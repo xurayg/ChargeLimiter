@@ -5,6 +5,7 @@
 
 #include "utils.h"
 #include "diagnostics.h"
+#include "watchdog.h"
 
 #define kHIDPage_PowerDevice                    0x84
 #define kHIDUsage_PD_PeripheralDevice           0x06
@@ -78,11 +79,6 @@ kern_return_t IOCreatePlugInInterfaceForService(io_service_t service, CFUUIDRef 
 - (void)updateProps:(NSDictionary*)props isEvent:(BOOL)event;
 @end
 
-enum {
-    CL_MODE_PLUG = 1,
-    CL_MODE_EDGE = 2,
-};
-
 static NSDictionary* bat_info = nil;
 static NSDictionary* control_bat_info = nil;
 static CLChargeDiagnostics* g_charge_diagnostics = nil;
@@ -92,6 +88,7 @@ static NSString* g_exit_reason = @"normal exit";
 static dispatch_source_t g_term_source, g_int_source, g_hup_source;
 static NSDictionary* chargingExplanation(NSDictionary* info);
 static NSString* g_last_explanation_code;
+static CLProcessLease* g_service_lease;
 
 static void logDiagnosticLines(NSArray<NSString*>* lines) {
     for (NSString* line in lines) NSFileLog(@"%@", line);
@@ -165,7 +162,7 @@ static NSDictionary* getBatSlimInfo(NSDictionary* info) {
     NSMutableDictionary* filtered_info = [NSMutableDictionary dictionary];
     NSArray* keep = @[
         @"Amperage", @"AppleRawCurrentCapacity", @"BatteryInstalled", @"BootVoltage", @"CurrentCapacity", @"CycleCount", @"DesignCapacity", @"ExternalChargeCapable", @"ExternalConnected",
-        @"InstantAmperage", @"IsCharging", @"NominalChargeCapacity", @"PostChargeWaitSeconds", @"PostDischargeWaitSeconds", @"Serial", @"Temperature",
+        @"InstantAmperage", @"IsCharging", @"PredictiveChargingInhibit", @"NominalChargeCapacity", @"PostChargeWaitSeconds", @"PostDischargeWaitSeconds", @"Serial", @"Temperature",
         @"UpdateTime", @"VirtualTemperature", @"Voltage"];
     for (NSString* key in info) {
         if ([keep containsObject:key]) {
@@ -325,10 +322,11 @@ static int setBatteryStatus(BOOL flag) {
     return ret;
 }
 
-static void resetBatteryStatus() {
+static int resetBatteryStatus() {
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
-        return;
+        recordChargeCommand(YES, -1);
+        return -1;
     }
     NSMutableDictionary* props = [NSMutableDictionary new];
     props[@"IsCharging"] = @YES;
@@ -337,6 +335,40 @@ static void resetBatteryStatus() {
     kern_return_t result = IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
     NSFileLog(@"reset charging and inflow IOKit result=0x%x", result);
     recordChargeCommand(YES, result == 0 ? 0 : -2);
+    return result == 0 ? 0 : -2;
+}
+
+static void ensureWatchdog() {
+    if (g_jbtype == JBTYPE_TROLLSTORE) {
+        NSString* watchdog = [[getSelfExePath() stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"ChargeLimiterWatchdog"];
+        spawn(@[watchdog], nil, nil, nil, SPAWN_FLAG_ROOT | SPAWN_FLAG_NOWAIT);
+    }
+}
+
+static int restartWatchedService() {
+    CLStopOwnedService();
+    if (g_jbtype == JBTYPE_TROLLSTORE) {
+        if (CLRoleIsLocked(@"service")) return -3;
+        NSString* daemon = [[getSelfExePath() stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"ChargeLimiterDaemon"];
+        return spawn(@[daemon], nil, nil, nil, SPAWN_FLAG_ROOT | SPAWN_FLAG_NOWAIT);
+    }
+    // The daemon remains a launchd job: never replace it with an orphan helper.
+    NSString* launchctl = @ROOTDIR "/bin/launchctl";
+    if (![NSFileManager.defaultManager isExecutableFileAtPath:launchctl]) launchctl = @"/bin/launchctl";
+    return spawn(@[launchctl, @"start", @"chaoge.ChargeLimiter"], nil, nil, nil, SPAWN_FLAG_NOWAIT);
+}
+
+static int restoreSystemCharging() {
+    CLStopOwnedService();
+    CLProcessLease* guard __attribute__((objc_precise_lifetime)) = [CLProcessLease acquireRole:@"service"];
+    if (!guard) return -3; // Never overwrite a live controller's decisions.
+    int result = resetBatteryStatus();
+    @try { setThermalSimulationMode(@"off"); } @catch (NSException* error) { NSFileLog(@"fallback thermal reset failed: %@",error.reason); }
+    NSDictionary* report = nil;
+    if (getBatInfo(&report) == 0) {
+        NSFileLog(@"fallback battery report IsCharging=%@ current=%@mA capacity=%@%% (system report, not hardware verification)",report[@"IsCharging"],report[@"Amperage"],report[@"CurrentCapacity"]);
+    }
+    return result;
 }
 
 static void performAcccharge(BOOL flag) {
@@ -490,7 +522,7 @@ static void updateStatistics() {
     NSDictionary* info_d = nil;
     info_h = getFilteredMDic(bat_info, @[
         @"Amperage", @"AppleRawCurrentCapacity", @"CurrentCapacity", @"ExternalChargeCapable", @"ExternalConnected",
-        @"InstantAmperage", @"IsCharging", @"Temperature", @"UpdateTime", @"Voltage"
+        @"InstantAmperage", @"IsCharging", @"PredictiveChargingInhibit", @"Temperature", @"UpdateTime", @"Voltage"
     ]);
     updateDBData("min5", ts / 300, info_h);
     updateDBData("hour", ts / 3600, info_h);
@@ -526,153 +558,35 @@ static void onBatteryEventEnd() {
     }
 }
 
-static float getTempAsC(NSString* key) {
-    NSNumber* temp_mode = getlocalKV(@"temp_mode");
-    NSNumber* temp = getlocalKV(key);
-    float temp_c = temp.floatValue;
-    if (temp_mode.intValue == 0) { // °C
-        return temp_c;
-    } else if (temp_mode.intValue == 1) { // °F
-        float temp_f = (temp_c - 32) / 1.8;
-        return temp_f;
-    }
-    return 0;
-}
-
-static void onBatteryEvent(io_service_t serv) {
+static void onBatteryEvent(io_service_t serv, NSString* trigger = @"battery event") {
     @autoreleasepool {
-        NSDictionary* old_bat_info = control_bat_info;
-        if (0 != getBatInfoWithServ(serv, &bat_info)) {
+        NSDictionary* previous = control_bat_info;
+        if (serv == IO_OBJECT_NULL || getBatInfoWithServ(serv, &bat_info) != 0) {
+            observeBatteryReport(@{});
             return;
         }
         control_bat_info = bat_info;
         observeBatteryReport(bat_info);
         updateStatistics();
-        if (!g_enable) {
-            return;
+        if (!g_enable) return;
+        NSNumber* disableInflow = getlocalKV(@"adv_disable_inflow");
+        BOOL startup = [trigger isEqualToString:@"startup"];
+        BOOL connected = !startup && isAdaptorNewConnect(previous, bat_info, disableInflow);
+        BOOL disconnected = !startup && isAdaptorNewDisconnect(previous, bat_info, disableInflow);
+        if (connected) NSFileLog(@"detect plug in (%@)", trigger);
+        else if (disconnected) NSFileLog(@"detect unplug (%@)", trigger);
+        NSMutableDictionary* config = [getAllKV() mutableCopy];
+        config[@"enable"] = @(g_enable);
+        NSDictionary* plan = CLChargingControlPlan(config, bat_info, previous, gUPSPS != nil, startup);
+        if (plan[@"charge"] || plan[@"inflow"]) {
+            NSFileLog(@"control evaluation trigger=%@ reason=%@ capacity=%@ temperature=%@ charge=%@ inflow=%@", trigger, plan[@"reason"], bat_info[@"CurrentCapacity"], bat_info[@"Temperature"], plan[@"charge"] ?: @"unchanged", plan[@"inflow"] ?: @"unchanged");
         }
-        NSString* raw_mode = getlocalKV(@"mode");
-        int mode = 0;
-        if ([raw_mode isEqualToString:@"charge_on_plug"]) {
-            mode = CL_MODE_PLUG;
-        } else if ([raw_mode isEqualToString:@"edge_trigger"]) {
-            mode = CL_MODE_EDGE;
-        }
-        NSNumber* charge_below = getlocalKV(@"charge_below");
-        NSNumber* charge_above = getlocalKV(@"charge_above");
-        NSNumber* enable_temp = getlocalKV(@"enable_temp");
-        NSNumber* capacity = bat_info[@"CurrentCapacity"];
-        BOOL is_charging = [bat_info[@"IsCharging"] boolValue];
-        NSNumber* is_inflow_enabled = bat_info[@"ExternalConnected"];
-        NSNumber* adv_disable_inflow = getlocalKV(@"adv_disable_inflow");
-        BOOL is_adaptor_connected = isAdaptorConnect(bat_info, adv_disable_inflow);
-        BOOL is_adaptor_new_connected = isAdaptorNewConnect(old_bat_info, bat_info, adv_disable_inflow);
-        BOOL is_adaptor_new_disconnected = isAdaptorNewDisconnect(old_bat_info, bat_info, adv_disable_inflow);
-        NSNumber* temperature_ = bat_info[@"Temperature"];
-        float charge_temp_above = getTempAsC(@"charge_temp_above");
-        float charge_temp_below = getTempAsC(@"charge_temp_below");
-        float temperature = temperature_.intValue / 100.0;
-        if (is_adaptor_new_connected) {
-            NSFileLog(@"detect plug in");
-        } else if (is_adaptor_new_disconnected) {
-            NSFileLog(@"detect unplug");
-        }
-        // 优先级: 电量极低 > 停充(电量>温度) > 充电(电量>温度) > 插电
-        do {
-            if (capacity.intValue <= 5) { // 电量极低,优先级=1
-                // 防止误用或意外造成无法充电
-                if (is_adaptor_connected && !is_charging) {
-                    NSFileLog(@"start charging for extremely low capacity %@", capacity);
-                    setInflowStatus(YES);
-                    setBatteryStatus(YES);
-                    performAcccharge(YES);
-                }
-                break;
-            }
-            if (capacity.intValue >= charge_above.intValue) { // 停充-电量高,优先级=2
-                if (is_charging) {
-                    NSFileLog(@"stop charging for high capacity %@ >= %@", capacity, charge_above);
-                    setBatteryStatus(NO);
-
-                    performAcccharge(NO);
-                }
-                if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
-                    NSFileLog(@"disable inflow for high capacity %@ >= %@", capacity, charge_above);
-                    setInflowStatus(NO);
-                }
-                break;
-            }
-            if (enable_temp.boolValue && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
-                if (is_charging) {
-                    NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
-                    setBatteryStatus(NO);
-
-                    performAcccharge(NO);
-                }
-                if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
-                    NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
-                    setInflowStatus(NO);
-                }
-                break;
-            }
-            if (capacity.intValue <= charge_below.intValue) { // 充电-电量低,优先级=4
-                // 禁流模式下电量下降后恢复充电
-                if (is_adaptor_connected) {
-                    BOOL restoringInflow = adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue;
-                    if (restoringInflow) {
-                        NSFileLog(@"enable inflow for low capacity %@ <= %@", capacity, charge_below);
-                        setInflowStatus(YES);
-                    }
-                    if (!is_charging || restoringInflow) {
-                        NSFileLog(@"start charging for low capacity %@ <= %@", capacity, charge_below);
-                        setBatteryStatus(YES);
-                        performAcccharge(YES);
-                    }
-                }
-                break;
-            }
-            if (mode == CL_MODE_PLUG) {
-                if (enable_temp.boolValue && temperature <= charge_temp_below) { // 充电-温度低,优先级=5
-                    if (is_adaptor_connected) {
-                        if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
-                            NSFileLog(@"enable inflow for low temperature %lf < %lf", temperature, charge_temp_below);
-                            setInflowStatus(YES);
-                        }
-                        if (!is_charging) {
-                            NSFileLog(@"start charging for low temperature %lf < %lf", temperature, charge_temp_below);
-                            setBatteryStatus(YES);
-
-                            performAcccharge(YES);
-                        }
-                    }
-                    break;
-                }
-                if (is_adaptor_new_connected) { // 充电-插电,优先级=6
-                    if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
-                        NSFileLog(@"enable inflow for plug in");
-                        setInflowStatus(YES);
-                    }
-                    NSFileLog(@"start charging for plug in");
-                    setBatteryStatus(YES);
-
-                    performAcccharge(YES);
-                    break;
-                }
-            } else if (mode == CL_MODE_EDGE) {
-                if (is_adaptor_new_connected) {
-                    NSFileLog(@"stop charging for plug in");
-                    setBatteryStatus(NO);
-                    if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
-                        NSFileLog(@"disable inflow for plug in");
-                        setInflowStatus(NO);
-                    }
-                }
-                break;
-            }
-        } while(false);
-        if (is_adaptor_new_disconnected) {
-            performAcccharge(NO);
-        }
+        // Restore power before starting charge; stop charge before cutting power.
+        if ([plan[@"inflow"] boolValue]) setInflowStatus(YES);
+        if (plan[@"charge"]) setBatteryStatus([plan[@"charge"] boolValue]);
+        if (plan[@"inflow"] && ![plan[@"inflow"] boolValue]) setInflowStatus(NO);
+        if (plan[@"acccharge"]) performAcccharge([plan[@"acccharge"] boolValue]);
+        if (disconnected) performAcccharge(NO);
         onBatteryEventEnd();
     }
 }
@@ -777,7 +691,10 @@ static void showFloatwnd(BOOL flag) {
 NSDictionary* handleReq(NSDictionary* nsreq) {
     NSString* api = nsreq[@"api"];
     if ([api isEqualToString:@"get_service_status"]) {
-        return @{@"status":@0, @"data":g_service_diagnostics.state ?: @{}};
+        NSMutableDictionary* status = [g_service_diagnostics.state mutableCopy] ?: [NSMutableDictionary new];
+        status[@"watchdog"] = CLReadWatchdogState();
+        status[@"control_check_interval_seconds"] = @20;
+        return @{@"status":@0, @"data":status};
     } else if ([api isEqualToString:@"get_conf"]) {
         NSString* key = nsreq[@"key"];
         if (key == nil) {
@@ -1238,12 +1155,24 @@ void detectUPSBattery() {
             }, nil, &iopmpsNoti);
             detectUPSBattery();
         }
+        NSFileLog(@"startup control evaluation; periodic control interval=20s");
+        onBatteryEvent(serv, @"startup");
+        ensureWatchdog();
+        __block NSTimeInterval lastControl = NSProcessInfo.processInfo.systemUptime;
+        __block NSTimeInterval lastWatchdog = lastControl;
         __block NSTimeInterval lastSummary = 0;
         g_diagnostics_timer = [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer* timer) {
             @autoreleasepool {
             NSTimeInterval now = NSDate.date.timeIntervalSince1970;
             [g_service_diagnostics heartbeatAtTime:now];
             persistServiceState();
+            NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
+            if (uptime - lastControl >= 20) {
+                detectUPSBattery();
+                onBatteryEvent(getIOPMPSServ(), @"periodic check");
+                lastControl = uptime;
+            }
+            if (uptime - lastWatchdog >= 60) { ensureWatchdog(); lastWatchdog = uptime; }
             NSDictionary* sample = nil;
             if (getBatInfo(&sample) == 0) {
                 bat_info = sample;
@@ -1267,13 +1196,25 @@ void detectUPSBattery() {
 int main(int argc, char** argv) { // daemon_main
     @autoreleasepool {
         NSError* storageError = nil;
-        if (!CLInitializeStorage(&storageError) || !CLReadConfiguration(&storageError)) {
+        if (!CLInitializeStorage(&storageError)) {
             NSLog2(@"Persistent storage unavailable; existing files preserved: %@", storageError);
             NSFileLog(@"service startup failed: persistent storage unavailable; existing files preserved: %@", storageError);
             return 1;
         }
         g_jbtype = getJBType();
+        if ([[getSelfExePath() lastPathComponent] isEqualToString:@"ChargeLimiterWatchdog"] || (argc == 2 && strcmp(argv[1], "watchdog") == 0)) {
+            if (g_jbtype != JBTYPE_TROLLSTORE) platformize_me();
+            return CLRunWatchdog(^int { return restartWatchedService(); }, ^int { return restoreSystemCharging(); });
+        }
+        if (argc == 2 && strcmp(argv[1], "reset") == 0) return resetBatteryStatus();
+        if (!CLReadConfiguration(&storageError)) {
+            NSFileLog(@"service startup failed: configuration unreadable; existing file preserved: %@", storageError);
+            return 1;
+        }
         if (argc == 1) {
+            signal(SIGCHLD, SIG_DFL); // Watchdog children inherit SIG_IGN otherwise.
+            g_service_lease = [CLProcessLease acquireRole:@"service"];
+            if (!g_service_lease) return 0;
             if (localPortOpen(GSERV_PORT)) {
                 NSFileLog(@"service already running; duplicate startup exiting");
                 return 0;
@@ -1311,6 +1252,7 @@ int main(int argc, char** argv) { // daemon_main
                 showFloatwnd(NO);
                 uninitDB();
                 [LSApplicationWorkspace.defaultWorkspace removeObserver:Service.inst];
+                g_service_lease = nil;
             });
             [Service.inst serve];
             [NSRunLoop.mainRunLoop run];
@@ -1318,10 +1260,7 @@ int main(int argc, char** argv) { // daemon_main
             NSFileLog(@"daemon unexpected: main runloop returned");
             return 0;
         } else if (argc > 1) {
-            if (0 == strcmp(argv[1], "reset")) { // 越狱下卸载前重置
-                resetBatteryStatus();
-                return 0;
-            } else if (0 == strcmp(argv[1], "watch_bat_info")) {
+            if (0 == strcmp(argv[1], "watch_bat_info")) {
                 BOOL slim = argc == 3;
                 while (true) {
                     getBatInfo(&bat_info, slim);

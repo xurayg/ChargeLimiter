@@ -1,11 +1,14 @@
 #!/bin/bash
 
+launchctl unload /Library/LaunchDaemons/chaoge.ChargeLimiter.watchdog.plist >/dev/null 2>&1
+launchctl unload /Library/LaunchDaemons/chaoge.ChargeLimiter.plist >/dev/null 2>&1
+killall -9 ChargeLimiter ChargeLimiterDaemon ChargeLimiterWatchdog >/dev/null 2>&1
 chown -R root:wheel /Applications/ChargeLimiter.app
 chmod +s /Applications/ChargeLimiter.app/ChargeLimiterDaemon
-chown root:wheel /Library/LaunchDaemons/chaoge.ChargeLimiter.plist
-killall -9 ChargeLimiter ChargeLimiterDaemon
+chown root:wheel /Library/LaunchDaemons/chaoge.ChargeLimiter*.plist
 launchctl load /Library/LaunchDaemons/chaoge.ChargeLimiter.plist
-uicache mobile; uicache --path /Applications/ChargeLimiter.app
+launchctl load /Library/LaunchDaemons/chaoge.ChargeLimiter.watchdog.plist
+uicache mobile
+uicache --path /Applications/ChargeLimiter.app
 
 exit 0
-

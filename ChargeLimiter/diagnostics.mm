@@ -3,6 +3,7 @@
 
 @implementation CLChargeDiagnostics {
     NSNumber* lastCharging;
+    NSNumber* lastEffectiveCharging;
     NSNumber* pendingTarget;
     NSTimeInterval pendingSince;
     BOOL timeoutLogged;
@@ -37,17 +38,20 @@
         return lines;
     }
     missingStateLogged = NO;
-    NSString* sample = [NSString stringWithFormat:@"IsCharging=%d capacity=%@%% amperage=%@mA temperature=%.2fC ExternalConnected=%@ batteryUpdateTime=%@", reported.boolValue, battery[@"CurrentCapacity"] ?: @"unknown", battery[@"Amperage"] ?: @"unknown", [battery[@"Temperature"] doubleValue] / 100, battery[@"ExternalConnected"] ?: @"unknown", battery[@"UpdateTime"] ?: @"unknown"];
+    BOOL effectiveCharging = reported.boolValue && ![battery[@"PredictiveChargingInhibit"] boolValue];
+    NSString* sample = [NSString stringWithFormat:@"IsCharging=%d PredictiveChargingInhibit=%@ effectiveCharging=%d capacity=%@%% amperage=%@mA temperature=%.2fC ExternalConnected=%@ batteryUpdateTime=%@", reported.boolValue, battery[@"PredictiveChargingInhibit"] ?: @"unknown", effectiveCharging, battery[@"CurrentCapacity"] ?: @"unknown", battery[@"Amperage"] ?: @"unknown", [battery[@"Temperature"] doubleValue] / 100, battery[@"ExternalConnected"] ?: @"unknown", battery[@"UpdateTime"] ?: @"unknown"];
     if (!lastCharging) [lines addObject:[@"battery initial report " stringByAppendingString:sample]];
     else if (lastCharging.boolValue != reported.boolValue) [lines addObject:[NSString stringWithFormat:@"battery state changed IsCharging=%d -> %d; %@", lastCharging.boolValue, reported.boolValue, sample]];
+    else if (lastEffectiveCharging && lastEffectiveCharging.boolValue != effectiveCharging) [lines addObject:[NSString stringWithFormat:@"battery effective state changed charging=%d -> %d; %@", lastEffectiveCharging.boolValue, effectiveCharging, sample]];
     lastCharging = @(reported.boolValue);
+    lastEffectiveCharging = @(effectiveCharging);
     if (pendingTarget) {
         NSTimeInterval elapsed = MAX(0, uptime - pendingSince);
-        if (reported.boolValue == pendingTarget.boolValue) {
-            NSString* evidence = reported.boolValue ? ([battery[@"Amperage"] longLongValue] > 0 ? @"positive charging current reported" : @"no positive current in this sample; check current/capacity trend") : @"system reports charging stopped";
+        if (effectiveCharging == pendingTarget.boolValue) {
+            NSString* evidence = effectiveCharging ? ([battery[@"Amperage"] longLongValue] > 0 ? @"positive charging current reported" : @"no positive current in this sample; check current/capacity trend") : @"system reports charging stopped";
             [lines addObject:[NSString stringWithFormat:@"charge target reported after %.1fs: %@; %@ (system-reported, not hardware verification)", elapsed, sample, evidence]];
             pendingTarget = nil;
-            if ([requestState[@"result"] intValue] == 0 && [requestState[@"target"] boolValue] == reported.boolValue) requestState[@"confirmed"] = @YES;
+            if ([requestState[@"result"] intValue] == 0 && [requestState[@"target"] boolValue] == effectiveCharging) requestState[@"confirmed"] = @YES;
         } else if (elapsed >= 120 && !timeoutLogged) {
             [lines addObject:[NSString stringWithFormat:@"charge target NOT reported after %.1fs: target=%d; %@", elapsed, pendingTarget.boolValue, sample]];
             timeoutLogged = YES;
@@ -77,6 +81,63 @@
 static NSDictionary* explanation(NSString* code, NSString* zh, NSString* en, NSString* detailZH, NSString* detailEN) {
     return @{@"code":code, @"title_zh":zh, @"title_en":en, @"detail_zh":detailZH, @"detail_en":detailEN};
 }
+static BOOL adaptorConnected(NSDictionary* config, NSDictionary* battery, BOOL hasUPS) {
+    if (hasUPS) return YES;
+    if (![config[@"adv_disable_inflow"] boolValue]) return [battery[@"ExternalChargeCapable"] boolValue];
+    NSString* source = battery[@"AdapterDetails"][@"Description"];
+    return source && ![source isEqualToString:@"batt"];
+}
+NSDictionary* CLChargingControlPlan(NSDictionary* config, NSDictionary* battery, NSDictionary* previous, BOOL hasUPS, BOOL startup) {
+    if (![config[@"enable"] boolValue]) return @{@"reason":@"automatic control disabled"};
+    if (![battery[@"CurrentCapacity"] isKindOfClass:NSNumber.class] || ![battery[@"IsCharging"] isKindOfClass:NSNumber.class]) return @{@"reason":@"battery report incomplete"};
+    NSInteger capacity = [battery[@"CurrentCapacity"] integerValue];
+    if (capacity < 0 || capacity > 100) return @{@"reason":@"capacity report invalid"};
+    BOOL charging = [battery[@"IsCharging"] boolValue] && ![battery[@"PredictiveChargingInhibit"] boolValue];
+    BOOL inflow = [battery[@"ExternalConnected"] boolValue];
+    BOOL disableInflow = [config[@"adv_disable_inflow"] boolValue];
+    BOOL adaptor = adaptorConnected(config,battery,hasUPS);
+    BOOL newAdaptor = !startup && adaptor && !adaptorConnected(config,previous,hasUPS);
+    NSMutableDictionary* plan = [NSMutableDictionary new];
+    if (capacity <= 5) {
+        plan[@"reason"] = @"critical capacity protection";
+        if (adaptor && !charging) { plan[@"inflow"] = @YES; plan[@"charge"] = @YES; plan[@"acccharge"] = @YES; }
+        return plan;
+    }
+    if (!config[@"charge_below"] || !config[@"charge_above"]) return @{@"reason":@"charging thresholds missing"};
+    double upper = [config[@"charge_temp_above"] doubleValue];
+    double lower = [config[@"charge_temp_below"] doubleValue];
+    if ([config[@"temp_mode"] intValue] == 1) { upper = (upper - 32) / 1.8; lower = (lower - 32) / 1.8; }
+    BOOL tempEnabled = [config[@"enable_temp"] boolValue];
+    BOOL capacityLimit = capacity >= [config[@"charge_above"] integerValue];
+    if (!capacityLimit && tempEnabled && (!battery[@"Temperature"] || !config[@"charge_temp_above"])) return @{@"reason":@"temperature report incomplete"};
+    double temp = [battery[@"Temperature"] doubleValue] / 100;
+    if (capacityLimit || (tempEnabled && temp >= upper)) {
+        plan[@"reason"] = capacityLimit ? @"upper capacity limit" : @"upper temperature limit";
+        if (charging) { plan[@"charge"] = @NO; plan[@"acccharge"] = @NO; }
+        if (disableInflow && inflow) plan[@"inflow"] = @NO;
+        return plan;
+    }
+    BOOL lowCapacity = capacity <= [config[@"charge_below"] integerValue];
+    BOOL plugMode = [config[@"mode"] isEqualToString:@"charge_on_plug"];
+    BOOL lowTemp = plugMode && tempEnabled && config[@"charge_temp_below"] && temp <= lower;
+    BOOL plugTrigger = plugMode && (newAdaptor || startup);
+    if (lowCapacity || lowTemp || plugTrigger) {
+        plan[@"reason"] = lowCapacity ? @"lower capacity threshold" : lowTemp ? @"lower temperature threshold" : @"plug-and-charge connection/startup";
+        if (adaptor) {
+            BOOL restoring = disableInflow && !inflow;
+            if (restoring) plan[@"inflow"] = @YES;
+            if (!charging || restoring || plugTrigger) { plan[@"charge"] = @YES; plan[@"acccharge"] = @YES; }
+        }
+        return plan;
+    }
+    if ([config[@"mode"] isEqualToString:@"edge_trigger"] && newAdaptor) {
+        plan[@"reason"] = @"edge-mode plug above lower threshold";
+        plan[@"charge"] = @NO;
+        if (disableInflow && inflow) plan[@"inflow"] = @NO;
+        return plan;
+    }
+    return @{@"reason":@"preserve state between thresholds"};
+}
 NSDictionary* CLChargingExplanation(NSDictionary* config, NSDictionary* battery, NSDictionary* commands, BOOL hasUPS) {
     if (!battery[@"CurrentCapacity"] || !battery[@"IsCharging"])
         return explanation(@"missing_report", @"电池状态不完整", @"Battery report incomplete", @"未读到电量或充电状态，无法判断是否满足条件。", @"Capacity or charging status is missing; eligibility cannot be determined.");
@@ -102,7 +163,7 @@ NSDictionary* CLChargingExplanation(NSDictionary* config, NSDictionary* battery,
     if (hasUPS) adaptor = YES;
     if (!adaptor)
         return explanation(@"no_adapter", @"未识别到可充电电源", @"No charge-capable power source detected", [NSString stringWithFormat:@"电源可充电=%@，外部供电=%@，电源描述=%@。%@请检查充电器和连接；这些信息不能直接证明线缆或电池故障。", battery[@"ExternalChargeCapable"] ?: @"未知", battery[@"ExternalConnected"] ?: @"未知", source ?: @"无", [config[@"adv_disable_inflow"] boolValue] ? @"禁流模式依赖电源描述，该信息可能被系统缓存。" : @""], @"Check the charger and connection. Power-source flags alone cannot identify a cable or battery fault; adapter descriptions can be cached in inflow-disable mode.");
-    if ([battery[@"IsCharging"] boolValue]) {
+    if ([battery[@"IsCharging"] boolValue] && ![battery[@"PredictiveChargingInhibit"] boolValue]) {
         BOOL positive = [battery[@"Amperage"] longLongValue] > 0;
         return explanation(positive ? @"charging" : @"charging_no_current", positive ? @"系统报告正在充电" : @"系统报告充电，但未读到正向电流", positive ? @"System reports charging" : @"Charging reported without positive current", [NSString stringWithFormat:@"IsCharging=1，电流=%@ mA。%@", battery[@"Amperage"] ?: @"未知", positive ? @"可结合后续电量上升确认实际充电。" : @"请观察后续电流和电量变化；具体原因暂未确定。"], @"IsCharging is a system report. Check subsequent current and capacity readings to assess actual charging.");
     }
@@ -119,15 +180,15 @@ NSDictionary* CLChargingExplanation(NSDictionary* config, NSDictionary* battery,
     if ([commands[@"pending_target"] boolValue]) {
         double elapsed = [commands[@"pending_seconds"] doubleValue];
         BOOL timedOut = elapsed >= 120;
-        return explanation(timedOut ? @"charge_timeout" : @"charge_pending", timedOut ? @"指令已接受，仍未报告充电" : @"指令已接受，等待充电状态更新", timedOut ? @"Request accepted; charging still not reported" : @"Request accepted; waiting for charging report", [NSString stringWithFormat:@"开始充电接口返回成功，已等待 %.0f 秒，当前 IsCharging=0。%@", elapsed, timedOut ? @"系统未提供进一步原因，暂不能确定是系统限制还是硬件问题；请导出日志排查。" : @"接口成功不代表已经实际充电。"], timedOut ? @"The start API succeeded, but IsCharging remains false after 120 seconds. The exact system or hardware cause is unknown; export logs." : @"The start API succeeded, but IsCharging is still false. API acceptance does not confirm physical charging.");
+        return explanation(timedOut ? @"charge_timeout" : @"charge_pending", timedOut ? @"指令已接受，仍未报告充电" : @"指令已接受，等待充电状态更新", timedOut ? @"Request accepted; charging still not reported" : @"Request accepted; waiting for charging report", [NSString stringWithFormat:@"开始充电接口返回成功，已等待 %.0f 秒，当前系统仍未报告有效充电（IsCharging=0 或充电抑制仍开启）。%@", elapsed, timedOut ? @"系统未提供进一步原因，暂不能确定是系统限制还是硬件问题；请导出日志排查。" : @"接口成功不代表已经实际充电。"], timedOut ? @"The start API succeeded, but effective charging is still not reported after 120 seconds. The exact system or hardware cause is unknown; export logs." : @"The start API succeeded, but effective charging is still not reported. API acceptance does not confirm physical charging.");
     }
     if (request && ![request[@"target"] boolValue] && [request[@"result"] intValue] == 0)
-        return explanation(@"last_stop", @"最近执行了停止充电指令", @"Latest request was to stop charging", [ageZH stringByAppendingString:@"当前电量满足开始条件，等待新的电池事件重新评估；手动操作也会影响当前状态。"], @"The latest successful request stopped charging. A new battery event will re-evaluate automatic control; manual changes also affect state.");
+        return explanation(@"last_stop", @"最近执行了停止充电指令", @"Latest request was to stop charging", [ageZH stringByAppendingString:@"当前电量满足开始条件，等待电池事件或下一次周期检查重新评估；手动操作也会影响当前状态。"], @"The latest successful request stopped charging. A battery event or the next periodic check will re-evaluate automatic control; manual changes also affect state.");
     if ([request[@"confirmed"] boolValue])
-        return explanation(@"charging_lost", @"系统已不再报告充电", @"System no longer reports charging", [ageZH stringByAppendingString:@"此前开始指令已得到充电状态回应，当前变为未充电；具体原因未确定，等待电池事件重新评估。"], @"A previous start was reported as charging; the current report is stopped. The cause is unknown; a battery event will re-evaluate control.");
+        return explanation(@"charging_lost", @"系统已不再报告充电", @"System no longer reports charging", [ageZH stringByAppendingString:@"此前开始指令已得到充电状态回应，当前变为未充电；具体原因未确定，等待电池事件或下一次周期检查重新评估。"], @"A previous start was reported as charging; the current report is stopped. The cause is unknown; a battery event or periodic check will re-evaluate control.");
     if (request)
         return explanation(@"unknown", @"条件满足，未充电原因尚未确定", @"Eligible; cause not yet determined", [NSString stringWithFormat:@"%@最近指令目标=%@、结果=%@；当前系统仍报告未充电。请查看日志和后续电池状态。", ageZH, request[@"target"], request[@"result"]], @"Current conditions are eligible, but the available command and battery reports do not establish the cause. Check logs and subsequent reports.");
-    return explanation(@"no_start_request", @"条件满足，尚未记录开始充电指令", @"Eligible; no start request recorded", @"本次服务运行尚未记录到开始指令。自动控制由电池事件触发；修改设置或刷新页面不会直接执行充电。可查看日志，或手动开启充电观察指令结果。", @"No start request has been recorded in this service instance. Battery events trigger control; changing settings or refreshing does not execute it. Check logs or try the manual charging switch.");
+    return explanation(@"no_start_request", @"条件满足，尚未记录开始充电指令", @"Eligible; no start request recorded", @"本次服务运行尚未记录到开始指令。服务会在启动时、电池事件及每 20 秒周期检查中重新判断；刷新页面只读取状态。可查看日志，或手动开启充电观察指令结果。", @"No start request has been recorded in this service instance. Startup, battery events and 20-second periodic checks evaluate control; refreshing only reads state. Check logs or try the manual charging switch.");
 }
 
 @implementation CLServiceDiagnostics {

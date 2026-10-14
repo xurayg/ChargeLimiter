@@ -1,12 +1,13 @@
 #!/bin/bash
 
+launchctl unload /var/jb/Library/LaunchDaemons/chaoge.ChargeLimiter.watchdog.plist >/dev/null 2>&1
+launchctl unload /var/jb/Library/LaunchDaemons/chaoge.ChargeLimiter.plist >/dev/null 2>&1
+killall -9 ChargeLimiter ChargeLimiterDaemon ChargeLimiterWatchdog >/dev/null 2>&1
 chown -R root:wheel /var/jb/Applications/ChargeLimiter.app
 chmod +s /var/jb/Applications/ChargeLimiter.app/ChargeLimiterDaemon
-killall -9 ChargeLimiter ChargeLimiterDaemon
-
-chown root:wheel /var/jb/Library/LaunchDaemons/chaoge.ChargeLimiter.plist
+chown root:wheel /var/jb/Library/LaunchDaemons/chaoge.ChargeLimiter*.plist
 launchctl load /var/jb/Library/LaunchDaemons/chaoge.ChargeLimiter.plist
+launchctl load /var/jb/Library/LaunchDaemons/chaoge.ChargeLimiter.watchdog.plist
 uicache mobile
 
 exit 0
-
