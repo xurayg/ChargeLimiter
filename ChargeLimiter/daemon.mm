@@ -106,6 +106,21 @@ static void recordChargeCommand(BOOL target, int result) {
     if (!g_charge_diagnostics) g_charge_diagnostics = [CLChargeDiagnostics new];
     logDiagnosticLines([g_charge_diagnostics recordRequest:target result:result atUptime:NSProcessInfo.processInfo.systemUptime]);
 }
+// 记住最近一次成功的停充/禁流决定; 服务退出或升级时的reset不清除它, 新服务启动后据此恢复
+static void rememberControl(NSString* key, BOOL value) {
+    NSMutableDictionary* state = [CLReadControlState() mutableCopy];
+    if ([state[key] isKindOfClass:NSNumber.class] && [state[key] boolValue] == value) return;
+    state[key] = @(value);
+    state[@"updated_at"] = @(NSDate.date.timeIntervalSince1970);
+    NSError* error = nil;
+    if (!CLWriteControlState(state, &error)) NSFileLog(@"control state save failed: %@", error);
+}
+// 用户关闭自动控制或切换停充/禁流方式时, 旧决定不再适用
+static void forgetControl() {
+    if (CLReadControlState().count == 0) return;
+    NSError* error = nil;
+    if (!CLWriteControlState(@{}, &error)) NSFileLog(@"control state clear failed: %@", error);
+}
 static void persistServiceState() {
     NSError* error = nil;
     if (![g_service_diagnostics save:&error]) NSFileLog(@"service state save failed: %@", error);
@@ -242,6 +257,7 @@ static int setInflowStatus(BOOL flag) {
     }
     [g_charge_diagnostics recordInflowRequest:flag result:0 atUptime:NSProcessInfo.processInfo.systemUptime];
     NSFileLog(@"inflow command target=%d result=0 (API accepted)", flag);
+    rememberControl(@"inflow", flag);
     return 0;
 }
 
@@ -303,6 +319,7 @@ static int setChargeStatus(BOOL flag) {
         return -2;
     }
     recordChargeCommand(flag, 0);
+    rememberControl(@"charge", flag);
     return 0;
 }
 
@@ -577,6 +594,15 @@ static void onBatteryEvent(io_service_t serv, NSString* trigger = @"battery even
         else if (disconnected) NSFileLog(@"detect unplug (%@)", trigger);
         NSMutableDictionary* config = [getAllKV() mutableCopy];
         config[@"enable"] = @(g_enable);
+        NSDictionary* inflowRequest = [g_charge_diagnostics stateAtUptime:NSProcessInfo.processInfo.systemUptime][@"inflow_request"];
+        NSDictionary* remembered = CLReadControlState();
+        if (inflowRequest) config[@"inflow_commanded_off"] = @(![inflowRequest[@"target"] boolValue] && [inflowRequest[@"result"] intValue] == 0);
+        else config[@"inflow_commanded_off"] = @([remembered[@"inflow"] isKindOfClass:NSNumber.class] && ![remembered[@"inflow"] boolValue]);
+        if (startup) {
+            if ([remembered[@"charge"] isKindOfClass:NSNumber.class]) config[@"remembered_charge"] = remembered[@"charge"];
+            if ([remembered[@"inflow"] isKindOfClass:NSNumber.class]) config[@"remembered_inflow"] = remembered[@"inflow"];
+            if (remembered.count) NSFileLog(@"remembered control state charge=%@ inflow=%@ updated_at=%@", remembered[@"charge"] ?: @"unknown", remembered[@"inflow"] ?: @"unknown", remembered[@"updated_at"] ?: @"unknown");
+        }
         NSDictionary* plan = CLChargingControlPlan(config, bat_info, previous, gUPSPS != nil, startup);
         if (plan[@"charge"] || plan[@"inflow"]) {
             NSFileLog(@"control evaluation trigger=%@ reason=%@ capacity=%@ temperature=%@ charge=%@ inflow=%@", trigger, plan[@"reason"], bat_info[@"CurrentCapacity"], bat_info[@"Temperature"], plan[@"charge"] ?: @"unchanged", plan[@"inflow"] ?: @"unchanged");
@@ -637,6 +663,7 @@ static void initConf(BOOL reset) {
             }
         }
         if (resetBattery) {
+            forgetControl();
             resetBatteryStatus();
         }
         if (restartDaemon) {
@@ -740,6 +767,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         if ([key isEqualToString:@"enable"]) {
             g_enable = [val boolValue];
             if (!g_enable) {
+                forgetControl();
                 resetBatteryStatus();
             } else { // 启用时检查
                 NSNumber* val = getlocalKV(@"disable_smart_charge");
@@ -750,8 +778,10 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                 }
             }
         } else if ([key isEqualToString:@"adv_predictive_inhibit_charge"]) {
+            forgetControl();
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
+            forgetControl();
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_prefer_smart"]) {
             g_exit_reason = @"battery source configuration changed";

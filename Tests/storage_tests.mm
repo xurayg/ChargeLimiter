@@ -30,6 +30,10 @@ int main(int argc, char** argv) {
         check([CLStorageInfo()[@"configuration_revisions"] intValue] == 1, @"one unique revision");
         check(CLWriteConfiguration(@"charge_below", @55, &error), @"unchanged configuration succeeds");
         check([CLStorageInfo()[@"configuration_revisions"] intValue] == 1, @"unchanged configuration does not rewrite");
+        check(CLReadControlState().count == 0, @"missing control state reads empty");
+        check(CLWriteControlState(@{@"charge":@NO, @"inflow":@NO}, &error), @"save control state");
+        check([CLReadControlState()[@"inflow"] isEqual:@NO], @"control state persists");
+        check(CLWriteControlState(@{}, &error) && CLReadControlState().count == 0, @"control state cleared");
         check(CLAppendLog(@"new log 中文\n", &error), @"append log");
         NSString* log = CLReadLogTail(1024, &error);
         check([log isEqualToString:@"old log\nnew log 中文\n"], @"append retains old log");

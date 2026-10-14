@@ -124,7 +124,10 @@ NSDictionary* CLChargingControlPlan(NSDictionary* config, NSDictionary* battery,
     if (lowCapacity || lowTemp || plugTrigger) {
         plan[@"reason"] = lowCapacity ? @"lower capacity threshold" : lowTemp ? @"lower temperature threshold" : @"plug-and-charge connection/startup";
         if (adaptor) {
-            BOOL restoring = disableInflow && !inflow;
+            // 部分旧设备(如iPhone5s iOS12)禁流后ExternalConnected回读仍为1, 不能只依赖回读判断是否需要恢复供电;
+            // 最近一次禁流指令成功或服务刚启动(上次指令未知)且未充电时, 也需恢复供电
+            BOOL commandedOff = [config[@"inflow_commanded_off"] boolValue];
+            BOOL restoring = disableInflow && (!inflow || commandedOff || (startup && !charging));
             if (restoring) plan[@"inflow"] = @YES;
             if (!charging || restoring || plugTrigger) { plan[@"charge"] = @YES; plan[@"acccharge"] = @YES; }
         }
@@ -135,6 +138,20 @@ NSDictionary* CLChargingControlPlan(NSDictionary* config, NSDictionary* battery,
         plan[@"charge"] = @NO;
         if (disableInflow && inflow) plan[@"inflow"] = @NO;
         return plan;
+    }
+    // 服务退出/升级时会重置为充电+供电, 启动时在上下限之间恢复上次的决定, 而不是沿用重置后的状态
+    NSNumber* rememberedCharge = config[@"remembered_charge"];
+    NSNumber* rememberedInflow = config[@"remembered_inflow"];
+    if (startup && (rememberedCharge || rememberedInflow)) {
+        plan[@"reason"] = @"restore remembered control state between thresholds";
+        if (rememberedCharge && rememberedCharge.boolValue != charging) {
+            plan[@"charge"] = rememberedCharge;
+            plan[@"acccharge"] = rememberedCharge;
+        }
+        // 禁流回读可能不可靠(iPhone5s iOS12), 记住的是禁流时总是重新下发
+        if (disableInflow && rememberedInflow && !rememberedInflow.boolValue) plan[@"inflow"] = @NO;
+        else if (disableInflow && rememberedInflow.boolValue && !inflow) plan[@"inflow"] = @YES;
+        if (plan.count > 1) return plan;
     }
     return @{@"reason":@"preserve state between thresholds"};
 }

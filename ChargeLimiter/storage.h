@@ -20,3 +20,6 @@ NSDictionary* CLReadServiceState(void);
 BOOL CLWriteServiceState(NSDictionary* state, NSError** error);
 NSDictionary* CLReadWatchdogState(void);
 BOOL CLWriteWatchdogState(NSDictionary* state, NSError** error);
+// Last automatic/manual charge and inflow decisions; survives reset on service exit/upgrade.
+NSDictionary* CLReadControlState(void);
+BOOL CLWriteControlState(NSDictionary* state, NSError** error);

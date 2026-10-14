@@ -205,3 +205,15 @@ BOOL CLWriteWatchdogState(NSDictionary* state, NSError** error) {
     CLSetPermissions(path, NO);
     return YES;
 }
+NSDictionary* CLReadControlState(void) {
+    NSData* data = [NSData dataWithContentsOfFile:CLPath(@"control-state.json")];
+    id state = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return [state isKindOfClass:NSDictionary.class] ? state : @{};
+}
+BOOL CLWriteControlState(NSDictionary* state, NSError** error) {
+    NSData* data = [NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:error];
+    NSString* path = CLPath(@"control-state.json");
+    if (!data || ![data writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
+    CLSetPermissions(path, NO);
+    return YES;
+}
