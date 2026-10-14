@@ -6,15 +6,6 @@ static int g_wind_type  = 0; // 1: HUD
 
 static void daemonRun(NSArray* nsreq);
 
-static BOOL isDarkMode() {
-    if (@available(iOS 13, *)) {
-        if (UITraitCollection.currentTraitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
 @implementation HUDMainWindow
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
@@ -25,9 +16,7 @@ static BOOL isDarkMode() {
 }
 @end
 
-@implementation AppDelegate {
-    NSString* initUrl;
-}
+@implementation AppDelegate
 static UIView* _mainWnd = nil;
 static AppDelegate* _app = nil;
 - (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)connectionOptions API_AVAILABLE(ios(13.0)) {
@@ -79,65 +68,27 @@ static AppDelegate* _app = nil;
     }
     return YES;
 }
-- (void)speedUpWebView:(UIWebView*)webview { // 优化UIWebView反应速度
-    // 不用WKWebView的原因: TrollStore环境下,需要no-container/no-sandbox执行子进程,而WKWebView在iOS>=16下需要container-required才能工作,考虑和越狱的一致性选择UIWebView
-    // 如果不执行js也可以用SFSafariViewController替代
-    for (UIView* view in webview.scrollView.subviews) {
-        if ([view.class.description isEqualToString:@"UIWebBrowserView"]) {
-            NSArray* gestures = view.gestureRecognizers;
-            for (UIGestureRecognizer* gestureRecognizer in gestures) {
-                if ([gestureRecognizer isKindOfClass:UITapGestureRecognizer.class]) {
-                    UITapGestureRecognizer* tapRecognizer = (UITapGestureRecognizer*)gestureRecognizer;
-                    if (tapRecognizer.numberOfTapsRequired > 1 || tapRecognizer.numberOfTouchesRequired > 1) {
-                        gestureRecognizer.enabled = NO;
-                    }
-                } else if ([gestureRecognizer isKindOfClass:UILongPressGestureRecognizer.class]) {
-                    gestureRecognizer.enabled = NO;
-                } else if ([gestureRecognizer isKindOfClass:UIPanGestureRecognizer.class]) {
-                    gestureRecognizer.enabled = NO;
-                } else {
-                    NSString* type = NSStringFromClass(gestureRecognizer.class);
-                    if ([type isEqualToString:@"UIWebTouchEventsGestureRecognizer"]) {
-                    } else {
-                        gestureRecognizer.enabled = NO;
-                    }
-                }
-            }
-            break;
-        }
-    }
-}
 - (void)viewDidAppear:(BOOL)animated {
     @autoreleasepool {
         [super viewDidAppear:animated];
         static CGSize scrSize = UIScreen.mainScreen.bounds.size;
         _app = self;
         if (g_wind_type == 0) {
-            NSString* imgpath = [NSString stringWithFormat:@"%@/splash.png", NSBundle.mainBundle.bundlePath];
-            UIImage* image = [UIImage imageWithContentsOfFile:imgpath];
-            UIImageView* imageview = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, scrSize.width, scrSize.height)];
-            imageview.image = image;
-            imageview.contentMode = UIViewContentModeScaleAspectFill;
-            [_mainWnd addSubview:imageview];
-            
-            UIWebView* webview = [[UIWebView alloc] initWithFrame:CGRectMake(0, 0, scrSize.width, scrSize.height)];
-            webview.delegate = self;
-            self.webview = webview;
-            initUrl = [NSString stringWithFormat:@"http://127.0.0.1:%d", GSERV_PORT];
-            NSURL* url = [NSURL URLWithString:initUrl];
-            NSURLRequest* req = [NSURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringCacheData timeoutInterval:3.0];
-            [webview loadRequest:req];
+            if (!self.childViewControllers.count) {
+                UIViewController* native = CLCreateNativeInterface();
+                [self addChildViewController:native];
+                native.view.frame = self.view.bounds;
+                native.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                [self.view addSubview:native.view];
+                [native didMoveToParentViewController:self];
+            }
         } else if (g_wind_type == 1) {
+            if (self.hudView) return;
             _mainWnd = self.view;
-            UIWebView* webview = [[UIWebView alloc] initWithFrame:CGRectMake(FLOAT_ORIGINX, FLOAT_ORIGINY, FLOAT_WIDTH, FLOAT_HEIGHT)]; // 窗口大小
-            webview.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.0];
-            webview.opaque = NO;
-            webview.delegate = self;
-            self.webview = webview;
-            initUrl = [NSString stringWithFormat:@"http://127.0.0.1:%d/float.html", GSERV_PORT];
-            NSURL* url = [NSURL URLWithString:initUrl];
-            NSURLRequest* req = [NSURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringCacheData timeoutInterval:3.0];
-            [webview loadRequest:req];
+            self.view.backgroundColor = UIColor.clearColor;
+            self.hudView = [[CLNativeHUD alloc] initWithFrame:CGRectMake(FLOAT_ORIGINX, FLOAT_ORIGINY, FLOAT_WIDTH, FLOAT_HEIGHT)];
+            [self.view addSubview:self.hudView];
+            [self.hudView startUpdating];
             BKSHIDEventRegisterEventCallback([](void* target, void* refcon, IOHIDServiceRef service, IOHIDEventRef event) {
                 @autoreleasepool {
                     IOHIDEventType type = IOHIDEventGetType(event);
@@ -158,8 +109,8 @@ static AppDelegate* _app = nil;
                             int f_y = MAX(y - FLOAT_HEIGHT/2, 50); // 防止刘海屏上拉残缺
                             f_x = MIN(f_x, scrSize.width - FLOAT_WIDTH);
                             f_y = MIN(f_y, scrSize.height - FLOAT_HEIGHT);
-                            CGRect rt = _app.webview.frame;
-                            [_app.webview setFrame:CGRectMake(f_x, f_y, rt.size.width, rt.size.height)];
+                            CGRect rt = _app.hudView.frame;
+                            [_app.hudView setFrame:CGRectMake(f_x, f_y, rt.size.width, rt.size.height)];
                         });
                     } else {
                         [UIApplication.sharedApplication _enqueueHIDEvent:event];
@@ -175,7 +126,7 @@ static AppDelegate* _app = nil;
                 }
                 cur_orient = update.orientation;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [_app.webview setTransform:CGAffineTransformMakeRotation(getOrientAngle(update.orientation))];
+                    [_app.hudView setTransform:CGAffineTransformMakeRotation(getOrientAngle(update.orientation))];
                 });
             }];
             
@@ -212,12 +163,12 @@ static AppDelegate* _app = nil;
                                         if ([white_list containsObject:cur_bid]) {
                                             NSFileLog(@"floatwnd unhide for %@", cur_bid);
                                             dispatch_async(dispatch_get_main_queue(), ^{
-                                                _app.webview.hidden = NO;
+                                                _app.hudView.hidden = NO;
                                             });
                                         } else {
                                             NSFileLog(@"floatwnd hide for %@", cur_bid);
                                             dispatch_async(dispatch_get_main_queue(), ^{
-                                                _app.webview.hidden = YES;
+                                                _app.hudView.hidden = YES;
                                             });
                                         }
                                     }
@@ -235,62 +186,10 @@ static AppDelegate* _app = nil;
         }
     }
 }
-- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id)coordinator {
-    UIDeviceOrientation orient = UIDevice.currentDevice.orientation;
-    if (orient == UIDeviceOrientationPortrait || orient == UIDeviceOrientationPortraitUpsideDown) {
-        CGRect rt = _app.webview.frame;
-        [_app.webview setFrame:CGRectMake(rt.origin.x, rt.origin.y, MIN(rt.size.width, rt.size.height), MAX(rt.size.width, rt.size.height))];
-    } else if (orient == UIDeviceOrientationLandscapeLeft || orient == UIDeviceOrientationLandscapeRight) {
-        CGRect rt = _app.webview.frame;
-        [_app.webview setFrame:CGRectMake(rt.origin.x, rt.origin.y, MAX(rt.size.width, rt.size.height), MIN(rt.size.width, rt.size.height))];
-    }
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 }
-- (void)webViewDidFinishLoad:(UIWebView*)webview {
-    [_mainWnd addSubview:webview];
-    [_mainWnd bringSubviewToFront:webview];
-    if (@available(iOS 17.0, *)) {
-        static BOOL ios17plusInit = NO;
-        if (!ios17plusInit) { // 修复iOS17 UIWebView无法滑动
-            ios17plusInit = YES;
-            [webview stringByEvaluatingJavaScriptFromString:@"window.location.reload()"];
-            return;
-        }
-    }
-    [self speedUpWebView:webview];
-    if (isDarkMode()) {
-        [webview stringByEvaluatingJavaScriptFromString:@"window.app.switch_dark(true)"];
-    } else {
-        [webview stringByEvaluatingJavaScriptFromString:@"window.app.switch_dark(false)"];
-    }
-    [webview stringByEvaluatingJavaScriptFromString:@"window.source='CL'"];
-    JSContext* context = [webview valueForKeyPath:@"documentView.webView.mainFrame.javaScriptContext"];
-    context[@"set_pb"] = ^{
-        @autoreleasepool {
-            NSArray* args = [JSContext currentArguments];
-            JSValue* val = args[0];
-            UIPasteboard* pb = [UIPasteboard generalPasteboard];
-            pb.string = val.toString;
-        }
-    };
-}
-- (void)webView:(UIWebView*)webview didFailLoadWithError:(NSError*)error {
-    NSString* surl = webview.request.URL.absoluteString;
-    [NSThread sleepForTimeInterval:0.5];
-    if (surl.length == 0) { // 服务端未初始化时url会被置空
-        surl = initUrl;
-    }
-    NSURL* url = [NSURL URLWithString:surl];
-    NSURLRequest* req = [NSURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:3.0];
-    [webview loadRequest:req];
-}
-- (BOOL)webView:(UIWebView *)webView shouldStartLoadWithRequest:(NSURLRequest*)request navigationType:(UIWebViewNavigationType)navigationType {
-    NSString* url = request.URL.absoluteString;
-    if ([url isEqualToString:@"safari://"]) {
-        [UIApplication.sharedApplication openURL:[NSURL URLWithString:initUrl]];
-        return NO;
-    }
-    return YES;
-}
+
 @end
 
 static void* make_sym_readable(void *ptr) {
@@ -367,13 +266,7 @@ static void* make_sym_callable(void *ptr) {
         [self setValue:fetcher forKey:@"eventFetcher"];
     } while (NO);
     
-    Method mori_handlePan = class_getInstanceMethod(UIScrollView.class, @selector(handlePan:));
-    Method mnew_handlePan = class_getInstanceMethod(HUDMainApplication.class, @selector(handlePan:));
-    method_exchangeImplementations(mori_handlePan, mnew_handlePan);
     return self;
-}
-- (void)handlePan:(UIPanGestureRecognizer*)recognizer {
-    // 避免悬浮窗滑动崩溃
 }
 @end
 

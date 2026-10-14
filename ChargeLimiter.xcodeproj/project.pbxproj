@@ -7,6 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A13C00000000000000000012 /* diagnostics.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000010 /* diagnostics.mm */; };
+		A13C00000000000000000013 /* diagnostics.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000010 /* diagnostics.mm */; };
+		A13C00000000000000000014 /* diagnostics.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000010 /* diagnostics.mm */; };
+		A13C00000000000000000015 /* diagnostics.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000010 /* diagnostics.mm */; };
+
+		A13C00000000000000000001 /* NativeUI.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000005 /* NativeUI.mm */; };
+		A13C00000000000000000002 /* storage.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000007 /* storage.mm */; };
+		A13C00000000000000000003 /* NativeUI.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000005 /* NativeUI.mm */; };
+		A13C00000000000000000004 /* storage.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000007 /* storage.mm */; };
+		A13C00000000000000000009 /* storage.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000007 /* storage.mm */; };
+		A13C0000000000000000000A /* storage.mm in Sources */ = {isa = PBXBuildFile; fileRef = A13C00000000000000000007 /* storage.mm */; };
+
 		182AAAF52B91661B006BBE9A /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 184FE8032B70BE8100525080 /* UserNotifications.framework */; };
 		182AAAF62B916632006BBE9A /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 184FE8032B70BE8100525080 /* UserNotifications.framework */; };
 		1839C1D12B8C250C00FCFDEB /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18257CBC2B88652600DC5F70 /* CoreGraphics.framework */; };
@@ -52,8 +64,6 @@
 		18C123EB2C8C136E00FAAC6C /* libMobileGestalt.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */; };
 		18C123ED2C8C14B200FAAC6C /* BackBoardServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18D0C42E2B7FC64F006A7AB7 /* BackBoardServices.tbd */; };
 		18C123EE2C8C14CD00FAAC6C /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C7B2B6DFD8000793FA9 /* CoreServices.framework */; };
-		18C123F02C8C168100FAAC6C /* JavaScriptCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123EF2C8C168100FAAC6C /* JavaScriptCore.framework */; };
-		18C123F12C8C168E00FAAC6C /* JavaScriptCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123EF2C8C168100FAAC6C /* JavaScriptCore.framework */; };
 		18C123F22C8C16A700FAAC6C /* libMobileGestalt.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */; };
 		18C123F32C8C16C200FAAC6C /* libMobileGestalt.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */; };
 		18C123F42C8C16D600FAAC6C /* IOKit.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C632B6CE41800793FA9 /* IOKit.tbd */; };
@@ -83,6 +93,13 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A13C00000000000000000010 /* diagnostics.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = diagnostics.mm; sourceTree = "<group>"; };
+		A13C00000000000000000011 /* diagnostics.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = diagnostics.h; sourceTree = "<group>"; };
+		A13C00000000000000000005 /* NativeUI.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = NativeUI.mm; sourceTree = "<group>"; };
+		A13C00000000000000000006 /* NativeUI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NativeUI.h; sourceTree = "<group>"; };
+		A13C00000000000000000007 /* storage.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = storage.mm; sourceTree = "<group>"; };
+		A13C00000000000000000008 /* storage.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = storage.h; sourceTree = "<group>"; };
+
 		1806F2F32B94AF11007CFED2 /* Intents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Intents.framework; path = System/Library/Frameworks/Intents.framework; sourceTree = SDKROOT; };
 		1806F2FF2B94AF11007CFED2 /* IntentsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IntentsUI.framework; path = System/Library/Frameworks/IntentsUI.framework; sourceTree = SDKROOT; };
 		181BA3A02B91BAB400CC07A6 /* md-trollstore-appex */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = "md-trollstore-appex"; sourceTree = "<group>"; };
@@ -116,7 +133,6 @@
 		18C123C82C8C08B300FAAC6C /* ChargeLimiterDaemon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiterDaemon.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		18C123E42C8C08CB00FAAC6C /* ChargeLimiterDaemon_rootless.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiterDaemon_rootless.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libMobileGestalt.tbd; path = usr/lib/libMobileGestalt.tbd; sourceTree = SDKROOT; };
-		18C123EF2C8C168100FAAC6C /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		18C50C632B6CE41800793FA9 /* IOKit.tbd */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = IOKit.tbd; sourceTree = "<group>"; };
 		18C50C652B6D2D5D00793FA9 /* utils.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = utils.mm; sourceTree = "<group>"; };
 		18C50C672B6D2D6E00793FA9 /* utils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = utils.h; sourceTree = "<group>"; };
@@ -137,7 +153,6 @@
 				184EA9A72B7A373300D0981D /* CFNetwork.framework in Frameworks */,
 				1839C1D22B8C251600FCFDEB /* CoreGraphics.framework in Frameworks */,
 				184EA9A82B7A373300D0981D /* CoreServices.framework in Frameworks */,
-				18C123F12C8C168E00FAAC6C /* JavaScriptCore.framework in Frameworks */,
 				184EA9AC2B7A373300D0981D /* UIKit.framework in Frameworks */,
 				182AAAF62B916632006BBE9A /* UserNotifications.framework in Frameworks */,
 				18D0C4302B7FC64F006A7AB7 /* BackBoardServices.tbd in Frameworks */,
@@ -154,7 +169,6 @@
 				187886542B519B1600E48B28 /* CFNetwork.framework in Frameworks */,
 				1839C1D12B8C250C00FCFDEB /* CoreGraphics.framework in Frameworks */,
 				18C50C7C2B6DFD8000793FA9 /* CoreServices.framework in Frameworks */,
-				18C123F02C8C168100FAAC6C /* JavaScriptCore.framework in Frameworks */,
 				187886552B519B2100E48B28 /* UIKit.framework in Frameworks */,
 				182AAAF52B91661B006BBE9A /* UserNotifications.framework in Frameworks */,
 				18D0C42F2B7FC64F006A7AB7 /* BackBoardServices.tbd in Frameworks */,
@@ -241,6 +255,13 @@
 				1870F5FC2B83B8F100B3660F /* GraphicsServices.tbd */,
 				187886422B51976B00E48B28 /* daemon.mm */,
 				18658A812BCF771800207EF3 /* ui.mm */,
+				A13C00000000000000000005 /* NativeUI.mm */,
+				A13C00000000000000000006 /* NativeUI.h */,
+				A13C00000000000000000007 /* storage.mm */,
+				A13C00000000000000000008 /* storage.h */,
+				A13C00000000000000000010 /* diagnostics.mm */,
+				A13C00000000000000000011 /* diagnostics.h */,
+
 				18658A832BCF772D00207EF3 /* ui.h */,
 				18C50C672B6D2D6E00793FA9 /* utils.h */,
 				18C50C652B6D2D5D00793FA9 /* utils.mm */,
@@ -252,7 +273,6 @@
 		187886492B5199D800E48B28 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				18C123EF2C8C168100FAAC6C /* JavaScriptCore.framework */,
 				18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */,
 				1877493C2C5544C9006184AA /* libdobby.a */,
 				18658A7A2BCBD93600207EF3 /* libsqlite3.tbd */,
@@ -490,6 +510,10 @@
 			files = (
 				184EA9A52B7A373300D0981D /* utils.mm in Sources */,
 				18658A8F2BD2716000207EF3 /* ui.mm in Sources */,
+				A13C00000000000000000001 /* NativeUI.mm in Sources */,
+				A13C00000000000000000002 /* storage.mm in Sources */,
+				A13C00000000000000000012 /* diagnostics.mm in Sources */,
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -499,6 +523,10 @@
 			files = (
 				18C50C662B6D2D5D00793FA9 /* utils.mm in Sources */,
 				18C123E72C8C099600FAAC6C /* ui.mm in Sources */,
+				A13C00000000000000000003 /* NativeUI.mm in Sources */,
+				A13C00000000000000000004 /* storage.mm in Sources */,
+				A13C00000000000000000013 /* diagnostics.mm in Sources */,
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -508,6 +536,9 @@
 			files = (
 				18C123B02C8C08B300FAAC6C /* utils.mm in Sources */,
 				18C123E82C8C09A400FAAC6C /* daemon.mm in Sources */,
+				A13C00000000000000000009 /* storage.mm in Sources */,
+				A13C00000000000000000014 /* diagnostics.mm in Sources */,
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -517,6 +548,9 @@
 			files = (
 				18C123CC2C8C08CB00FAAC6C /* utils.mm in Sources */,
 				18C123CB2C8C08CB00FAAC6C /* daemon.mm in Sources */,
+				A13C0000000000000000000A /* storage.mm in Sources */,
+				A13C00000000000000000015 /* diagnostics.mm in Sources */,
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -869,6 +903,7 @@
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
+				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -911,6 +946,7 @@
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
+				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -953,6 +989,7 @@
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
+				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -997,6 +1034,7 @@
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
+				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

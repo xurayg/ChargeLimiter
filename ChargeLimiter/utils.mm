@@ -122,7 +122,16 @@ int spawn(NSArray* args, NSString** stdOut, NSString** stdErr, pid_t* pidPtr, in
     if (param != nil) {
         if (param[@"cwd"] != nil) {
             NSString* path = param[@"cwd"];
-            posix_spawn_file_actions_addchdir_np(&action, path.UTF8String);
+            // This private iOS symbol is marked unavailable by current public SDKs.
+            auto addChdir = (int (*)(posix_spawn_file_actions_t*, const char*))dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np");
+            int error = addChdir ? addChdir(&action, path.UTF8String) : ENOTSUP;
+            if (error) {
+                posix_spawnattr_destroy(&attr);
+                posix_spawn_file_actions_destroy(&action);
+                for (NSUInteger i = 0; i < argCount; i++) free(argsC[i]);
+                free(argsC);
+                return error;
+            }
         }
         if (param[@"close"] != nil) {
             NSArray* closes_fds = param[@"close"];
@@ -398,14 +407,9 @@ void NSFileLog(NSString* fmt, ...) {
     NSString* dateStr = [formatter stringFromDate:NSDate.date];
     NSString* content = [[NSString alloc] initWithFormat:fmt arguments:va];
     content = [NSString stringWithFormat:@"%@ %@\n", dateStr, content];
-    NSFileHandle* handle = [NSFileHandle fileHandleForWritingAtPath:@LOG_PATH];
-    if (handle == nil) {
-        [[NSFileManager defaultManager] createFileAtPath:@LOG_PATH contents:nil attributes:nil];
-        handle = [NSFileHandle fileHandleForWritingAtPath:@LOG_PATH];
-    }
-    [handle seekToEndOfFile];
-    [handle writeData:[content dataUsingEncoding:NSUTF8StringEncoding]];
-    [handle closeFile];
+    NSError* error = nil;
+    if (!CLAppendLog(content, &error)) NSLog2(@"Log write failed: %@", error);
+    va_end(va);
 }
 
 NSString* getAppVer() {
@@ -883,29 +887,18 @@ void setSmartChargeEnable(BOOL flag) {
 }
 
 /* ---------------- App ---------------- */
-static NSMutableDictionary* cache_kv = nil;
 id getlocalKV(NSString* key) {
-    if (cache_kv == nil) {
-        cache_kv = [NSMutableDictionary dictionaryWithContentsOfFile:@CONF_PATH];
-    }
-    if (cache_kv == nil) {
-        return nil;
-    }
-    return cache_kv[key];
+    return CLReadConfiguration(nil)[key];
 }
 
-void setlocalKV(NSString* key, id val) {
-    if (cache_kv == nil) {
-        cache_kv = [NSMutableDictionary dictionaryWithContentsOfFile:@CONF_PATH];
-        if (cache_kv == nil) {
-            cache_kv = [NSMutableDictionary new];
-        }
-    }
-    cache_kv[key] = val;
-    [cache_kv writeToFile:@CONF_PATH atomically:YES];
+BOOL setlocalKV(NSString* key, id val) {
+    NSError* error = nil;
+    BOOL saved = CLWriteConfiguration(key, val, &error);
+    if (!saved) NSFileLog(@"configuration save failed for %@: %@", key, error);
+    return saved;
 }
 NSDictionary* getAllKV() {
-    return cache_kv;
+    return CLReadConfiguration(nil);
 }
 /* ---------------- App ---------------- */
 

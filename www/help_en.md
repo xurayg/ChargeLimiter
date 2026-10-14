@@ -1,3 +1,9 @@
+## Charging explanations and service lifecycle
+
+Tap Automatic control on the Charging tab for policy blockers, power-source reports, failed charge/inflow requests, pending reports, the 120-second warning, or no recorded start request. Explanation category changes are logged once. An unknown cause remains unknown; reports do not prove a hardware fault. Battery events trigger automatic control; settings changes and refreshes only read state.
+
+A forced kill here refers primarily to ChargeLimiterDaemon. Closing the UI normally leaves the rootful deb launchd service running. A foreground app can log connection loss and the next service start can detect an unclean exit; SIGKILL cannot write a log at the instant of termination.
+
 ## ChargeLimiter
 
 ChargeLimiter(CL) is inspired by MacOS version AlDente, used to prevent iDevice from getting overcharged, which will cause damage to the battery.     
@@ -60,7 +66,7 @@ What is the best way to keep the battery healthy?
 * Avoid out of power
 
 How can I debug CL myself when sth. goes wrong?
-* View the data in 5min chart and the log(/var/root/aldente.log) to verify the history data of charge/discharge.
+* View the data in 5min chart and the log(/var/mobile/Library/ChargeLimiter/aldente.log) to verify the history data of charge/discharge.
 
 How to find out power killer App with CL?
 *  Open the App or enable some system feature, wait some time, and view the data in 5min chart or Amperage in Helium App to find out the killer.
@@ -146,7 +152,7 @@ triggers precedence from high to low:
 
 ### Action
 
-Action on trigger start/stop charging. Please reset it after reinstalling/updating CL.
+Current builds log charging events only. System charging notifications are disabled; inspect Diagnostics in the native app.
 
 ### Advanced
 

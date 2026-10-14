@@ -1,5 +1,39 @@
 * [For English](#Introduction)
 
+## 原生界面与持久保存
+
+App 主界面与悬浮窗使用 UIKit 原生控件。原生界面通过本机 JSON 接口与独立充电服务通信；本机网页和已有 HTTP API 仍可用于兼容旧工具。
+
+在“诊断与导出”中可查看日志、查看已保存配置、导出并使用系统分享保存到“文件”或通过 AirDrop 分享。导出包含完整日志、JSON 与 plist 配置和电池状态快照；界面日志预览仅显示最近 256 KB，导出不裁剪日志。
+
+设备固定保存目录：`/var/mobile/Library/ChargeLimiter/`。
+
+* `aldente.conf`：当前配置；启动只补充缺少的配置项，保留已有值。
+* `aldente.log`：追加式日志；重启不清空。
+* `aldente.db`：电池历史统计。
+* `ConfigHistory/`：配置修改的独立历史版本。
+* `Exports/`：每次导出的独立目录，按时间和 UUID 命名。可在 App 中再次分享。
+
+首次启动会迁移 `/var/root/aldente.conf`、`aldente.log` 和 `aldente.db`，已有目标文件不会被旧文件覆盖；旧文件仍保留。配置文件损坏时保留原文件并报告错误，不使用默认配置覆盖。存储位于 App 安装目录之外，不随 App 或服务重启清空；设备抹除、人工删除或系统清理仍会移除文件。
+
+存储回归验证：`python3 Tests/run_storage_tests.py`（macOS + Xcode 命令行工具）。
+
+### 充电与服务诊断
+
+充电页的“自动控制状态”可点击查看原因：自动控制关闭、电量/温度保护、未识别到电源、充电或恢复供电指令失败、指令接受后等待状态更新、120 秒后仍未报告充电，以及尚未收到开始指令。原因类别变化只追加一条说明日志。系统未提供具体原因时显示“原因未确定”，不会据此断言电池或线缆损坏。自动控制由电池事件触发，改设置和刷新只读取状态。
+
+“强杀”主要指 `ChargeLimiterDaemon` 后台服务被强制终止；关闭界面 App 通常不停止有根 deb 版本的独立 launchd 服务。前台 App 可记录断连，服务下次启动可识别未正常退出，但 SIGKILL 当时无法自行写入死亡日志。
+
+充停电改为只记录日志，不发送系统通知；旧配置中的通知开关会关闭。四个 tab 使用内置模板图标，iOS 12 无需 SF Symbols。
+
+日志分开记录 `charge command ... result=0`（接口接受指令）与 `battery state changed IsCharging=0 -> 1` / `charge target reported`（重新读取的系统电池报告），并附带电流、电量和电池数据更新时间。120 秒仍未得到匹配状态会记录 `charge target NOT reported`；状态不可读也会记录超时。系统报告并不等于硬件验证，需结合正电流和电量上升判断。历史电池数据不随服务停止而清空。
+
+后台每 5 秒更新 `service-state.json`，每约 60 秒追加一条 `service heartbeat` 日志。启动、可处理的退出信号和正常退出会记录日志；若上次没有正常退出标记，重启会记录上次 PID、最后心跳与间隔，并区分设备重启。SIGKILL、断电等无法由进程在死亡瞬间写日志，因此只报告“可能崩溃或强杀，原因未知”。
+
+App 前台独立每秒探测服务，超时为 3 秒；所有 tab 顶部显示连接状态，不受电池更新频率影响。App 会记录断连、恢复连接和服务实例变化。服务离线时仍可读取设备已保存的日志、配置和导出；离线导出的电池数据为上次读取值或空值。
+
+诊断回归验证：`python3 Tests/run_diagnostics_tests.py`。
+
 ## 介绍
 
 &emsp;&emsp;ChargeLimiter(CL)是针对iOS开发的AlDente替代工具,适用于长时间过充情况下保护电池健康度.  
@@ -48,7 +82,7 @@ CL支持第三方电池吗?
 * 如果你的巨魔环境足够稳定, CL服务可以正常运行数月以上, 但如果iCloud半夜同步强杀进程, 或半越狱不稳定导致用户空间重启, 或其他可能导致CL服务失效的情况, 表现为一夜充满, 这并非软件Bug, CL为此提供了尽力而为的保活能力, 包括scheme/悬浮窗拉起服务. 如果你的巨魔不稳定可以使用越狱版本CL. 
 
 我的电池&小板硬件是否支持CL停充?
-* 唯一测试方式就是在关闭全局开关的情况下手动控制(开或关)"正在充电"按钮,若120秒内不变(关或开),就是电池或小板存在问题而非软件BUG,以下将硬件无法支持简称"失控"
+* 唯一测试方式就是在关闭全局开关的情况下手动控制(开或关)"正在充电"按钮,若120秒内状态仍未改变，应结合指令返回值、系统电池报告和电流/电量趋势排查，不能仅凭按钮状态认定硬件故障,以下将硬件无法支持简称"失控"
 * 从近几个月反馈来看少数电池/小板可能因为包括但不限于以下几种原因导致失控: 温度升高(温度高时失控,温度恢复时又可控)/健康度低(一直失控,或系统开机后一段时间内可控,之后失控)/电池未激活(新买电池未做激活导致有概率失控)
 * 以上失控问题由于是硬件层面有问题, 如果是因为不明原因或健康度低导致的失控, 不推荐使用CL及类似工具, 可以尝试更换电池/小板解决; 电池未激活的,确定电池品牌(非软件中显示)并从官方客服获取正确激活方法激活即可;如果因为温度失控的想办法控温即可.
 
@@ -68,7 +102,7 @@ CL(及类似功能的软件)可以不依赖越狱或巨魔类工具吗?
 * 避免电量耗尽
 
 遇到问题时如何自行诊断?
-* 可以参照5分钟图和日志(/var/root/aldente.log)。例如：发现5分钟图存在1小时以上的数据缺失，就可能是掉后台了。
+* 可以参照5分钟图和日志(/var/mobile/Library/ChargeLimiter/aldente.log)。例如：发现5分钟图存在1小时以上的数据缺失，就可能是掉后台了。
 
 如何找到耗电应用?
 * 可以借助观察5分钟图或者Helium的实时电流数据，来检测开启某项系统功能或运行某App会增加多少电流
@@ -167,7 +201,7 @@ CL(及类似功能的软件)可以不依赖越狱或巨魔类工具吗?
 
 ### 行为
 
-&emsp;&emsp;用于控制触发充电和停充时的行为,目前仅支持系统通知,每次重装CL需要重选以生效.
+&emsp;&emsp;当前版本充停电仅记录日志，不发送系统通知；可在 App 的“诊断与导出”中查看。
 
 ### 高级
 
@@ -416,7 +450,7 @@ What is the best way to keep the battery healthy?
 * Avoid out of power
 
 How can I debug CL myself when sth. goes wrong?
-* View the data in 5min chart and the log(/var/root/aldente.log) to verify the history data of charge/discharge.
+* View the data in 5min chart and the log(/var/mobile/Library/ChargeLimiter/aldente.log) to verify the history data of charge/discharge.
 
 How to find out power killer App with CL?
 *  Open the App or enable some system feature, wait some time, and view the data in 5min chart or Amperage in Helium App to find out the killer.
@@ -502,7 +536,7 @@ triggers precedence from high to low:
 
 ### Action
 
-Action on trigger start/stop charging. Please reset it after reinstalling/updating CL.
+Current builds log charging events only. System charging notifications are disabled; inspect Diagnostics in the native app.
 
 ### Advanced
 

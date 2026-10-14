@@ -80,7 +80,7 @@ void setSmartChargeEnable(BOOL flag);
 
 /* ---------------- App ---------------- */
 id getlocalKV(NSString* key);
-void setlocalKV(NSString* key, id val);
+BOOL setlocalKV(NSString* key, id val);
 NSDictionary* getAllKV();
 /* ---------------- App ---------------- */
 

@@ -4,6 +4,7 @@
 #import <UserNotifications/UserNotifications.h>
 
 #include "utils.h"
+#include "diagnostics.h"
 
 #define kHIDPage_PowerDevice                    0x84
 #define kHIDUsage_PD_PeripheralDevice           0x06
@@ -83,6 +84,45 @@ enum {
 };
 
 static NSDictionary* bat_info = nil;
+static NSDictionary* control_bat_info = nil;
+static CLChargeDiagnostics* g_charge_diagnostics = nil;
+static CLServiceDiagnostics* g_service_diagnostics = nil;
+static NSTimer* g_diagnostics_timer = nil;
+static NSString* g_exit_reason = @"normal exit";
+static dispatch_source_t g_term_source, g_int_source, g_hup_source;
+static NSDictionary* chargingExplanation(NSDictionary* info);
+static NSString* g_last_explanation_code;
+
+static void logDiagnosticLines(NSArray<NSString*>* lines) {
+    for (NSString* line in lines) NSFileLog(@"%@", line);
+}
+static void observeBatteryReport(NSDictionary* info) {
+    if (!g_charge_diagnostics) g_charge_diagnostics = [CLChargeDiagnostics new];
+    logDiagnosticLines([g_charge_diagnostics observeBattery:info atUptime:NSProcessInfo.processInfo.systemUptime]);
+    NSDictionary* reason = chargingExplanation(info);
+    if (![g_last_explanation_code isEqualToString:reason[@"code"]]) {
+        NSFileLog(@"charging explanation [%@]: %@; %@", reason[@"code"], reason[@"title_zh"], reason[@"detail_zh"]);
+        g_last_explanation_code = reason[@"code"];
+    }
+}
+static void recordChargeCommand(BOOL target, int result) {
+    if (!g_charge_diagnostics) g_charge_diagnostics = [CLChargeDiagnostics new];
+    logDiagnosticLines([g_charge_diagnostics recordRequest:target result:result atUptime:NSProcessInfo.processInfo.systemUptime]);
+}
+static void persistServiceState() {
+    NSError* error = nil;
+    if (![g_service_diagnostics save:&error]) NSFileLog(@"service state save failed: %@", error);
+}
+static void installExitSignal(int number, dispatch_source_t __strong* source) {
+    signal(number, SIG_IGN);
+    *source = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, number, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(*source, ^{
+        g_exit_reason = [NSString stringWithFormat:@"received signal %d", number];
+        NSFileLog(@"service shutting down: %@", g_exit_reason);
+        exit(0);
+    });
+    dispatch_resume(*source);
+}
 static BOOL g_enable = NO;
 static BOOL g_enable_floatwnd = NO;
 static BOOL g_use_smart = NO;
@@ -95,12 +135,10 @@ static UPSDataSlim* gUPSPS = nil;
 
 NSDictionary* handleReq(NSDictionary* nsreq);
 
-@interface Service: NSObject<UNUserNotificationCenterDelegate>
+@interface Service: NSObject
 + (instancetype)inst;
 - (instancetype)init;
 - (void)serve;
-- (void)initLocalPush;
-- (void)localPush:(NSString*)title msg:(NSString*)msg;
 @end
 
 
@@ -189,8 +227,11 @@ static int getBatInfo(NSDictionary* __strong* pinfo, BOOL slim=YES) {
 }
 
 static int setInflowStatus(BOOL flag) {
+    if (!g_charge_diagnostics) g_charge_diagnostics = [CLChargeDiagnostics new];
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
+        [g_charge_diagnostics recordInflowRequest:flag result:-1 atUptime:NSProcessInfo.processInfo.systemUptime];
+        NSFileLog(@"inflow command target=%d result=-1 (battery control interface unavailable)", flag);
         return -1;
     }
     // iPhone>=8 ExternalConnected重置可消除120秒延迟,且更新系统充电图标
@@ -198,9 +239,19 @@ static int setInflowStatus(BOOL flag) {
     props[@"ExternalConnected"] = @(flag);
     kern_return_t ret = IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
     if (ret != 0) {
+        [g_charge_diagnostics recordInflowRequest:flag result:-2 atUptime:NSProcessInfo.processInfo.systemUptime];
+        NSFileLog(@"inflow command target=%d result=-2 IOKit=0x%x", flag, ret);
         return -2;
     }
+    [g_charge_diagnostics recordInflowRequest:flag result:0 atUptime:NSProcessInfo.processInfo.systemUptime];
+    NSFileLog(@"inflow command target=%d result=0 (API accepted)", flag);
     return 0;
+}
+
+static NSDictionary* chargingExplanation(NSDictionary* info) {
+    NSMutableDictionary* config = [getAllKV() mutableCopy];
+    config[@"enable"] = @(g_enable);
+    return CLChargingExplanation(config, info, [g_charge_diagnostics stateAtUptime:NSProcessInfo.processInfo.systemUptime], gUPSPS != nil);
 }
 
 static BOOL isAdaptorConnect(NSDictionary* info, NSNumber* disableInflow) { // 是否连接电源
@@ -237,6 +288,7 @@ static int setChargeStatus(BOOL flag) {
     NSNumber* adv_predictive_inhibit_charge = getlocalKV(@"adv_predictive_inhibit_charge");
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
+        recordChargeCommand(flag, -1);
         return -1;
     }
     NSMutableDictionary* props = [NSMutableDictionary new];
@@ -249,8 +301,11 @@ static int setChargeStatus(BOOL flag) {
     }
     kern_return_t ret = IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
     if (ret != 0) {
+        NSFileLog(@"charge API failed: IOKit result=0x%x", ret);
+        recordChargeCommand(flag, -2);
         return -2;
     }
+    recordChargeCommand(flag, 0);
     return 0;
 }
 
@@ -279,7 +334,9 @@ static void resetBatteryStatus() {
     props[@"IsCharging"] = @YES;
     props[@"PredictiveChargingInhibit"] = @NO;
     props[@"ExternalConnected"] = @YES;
-    IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+    kern_return_t result = IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+    NSFileLog(@"reset charging and inflow IOKit result=0x%x", result);
+    recordChargeCommand(YES, result == 0 ? 0 : -2);
 }
 
 static void performAcccharge(BOOL flag) {
@@ -338,31 +395,6 @@ static void performAcccharge(BOOL flag) {
             }
             cache_status = nil;
         }
-    }
-}
-
-static NSString* getMsgForLang(NSString* msgid, NSString* lang) {
-    static NSDictionary* messages = nil;
-    if (messages == nil) {
-        NSString* bundlePath = [getSelfExePath() stringByDeletingLastPathComponent];
-        NSString* langPath = [bundlePath stringByAppendingString:@"/www/lang.json"];
-        NSData* data = [NSData dataWithContentsOfFile:langPath];
-        messages = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    }
-    if (messages[lang] == nil) {
-        lang = @"en";
-    }
-    return messages[lang][msgid];
-}
-
-static void performAction(NSString* msgid) {
-    NSString* lang = getlocalKV(@"lang");
-    NSString* action = getlocalKV(@"action");
-    if (action.length == 0) {
-        return;
-    }
-    if ([action isEqualToString:@"noti"]) {
-        [Service.inst localPush:@PRODUCT msg:getMsgForLang(msgid, lang)];
     }
 }
 
@@ -509,10 +541,12 @@ static float getTempAsC(NSString* key) {
 
 static void onBatteryEvent(io_service_t serv) {
     @autoreleasepool {
-        NSDictionary* old_bat_info = bat_info;
+        NSDictionary* old_bat_info = control_bat_info;
         if (0 != getBatInfoWithServ(serv, &bat_info)) {
             return;
         }
+        control_bat_info = bat_info;
+        observeBatteryReport(bat_info);
         updateStatistics();
         if (!g_enable) {
             return;
@@ -559,7 +593,7 @@ static void onBatteryEvent(io_service_t serv) {
                 if (is_charging) {
                     NSFileLog(@"stop charging for high capacity %@ >= %@", capacity, charge_above);
                     setBatteryStatus(NO);
-                    performAction(@"stop_charge");
+
                     performAcccharge(NO);
                 }
                 if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
@@ -572,7 +606,7 @@ static void onBatteryEvent(io_service_t serv) {
                 if (is_charging) {
                     NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
                     setBatteryStatus(NO);
-                    performAction(@"stop_charge");
+
                     performAcccharge(NO);
                 }
                 if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
@@ -584,14 +618,16 @@ static void onBatteryEvent(io_service_t serv) {
             if (capacity.intValue <= charge_below.intValue) { // 充电-电量低,优先级=4
                 // 禁流模式下电量下降后恢复充电
                 if (is_adaptor_connected) {
-                    if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
+                    BOOL restoringInflow = adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue;
+                    if (restoringInflow) {
                         NSFileLog(@"enable inflow for low capacity %@ <= %@", capacity, charge_below);
                         setInflowStatus(YES);
                     }
-                    NSFileLog(@"start charging for low capacity %@ <= %@", capacity, charge_below);
-                    setBatteryStatus(YES);
-                    performAction(@"start_charge");
-                    performAcccharge(YES);
+                    if (!is_charging || restoringInflow) {
+                        NSFileLog(@"start charging for low capacity %@ <= %@", capacity, charge_below);
+                        setBatteryStatus(YES);
+                        performAcccharge(YES);
+                    }
                 }
                 break;
             }
@@ -605,7 +641,7 @@ static void onBatteryEvent(io_service_t serv) {
                         if (!is_charging) {
                             NSFileLog(@"start charging for low temperature %lf < %lf", temperature, charge_temp_below);
                             setBatteryStatus(YES);
-                            performAction(@"start_charge");
+
                             performAcccharge(YES);
                         }
                     }
@@ -618,7 +654,7 @@ static void onBatteryEvent(io_service_t serv) {
                     }
                     NSFileLog(@"start charging for plug in");
                     setBatteryStatus(YES);
-                    performAction(@"start_charge");
+
                     performAcccharge(YES);
                     break;
                 }
@@ -711,6 +747,10 @@ static void initConf(BOOL reset) {
             }
         }
     }
+    if ([getlocalKV(@"action") length] > 0) {
+        setlocalKV(@"action", @"");
+        NSFileLog(@"charging notifications removed; log-only mode enabled");
+    }
     NSNumber* enable = getlocalKV(@"enable");
     g_enable = enable.boolValue;
 }
@@ -736,7 +776,9 @@ static void showFloatwnd(BOOL flag) {
 
 NSDictionary* handleReq(NSDictionary* nsreq) {
     NSString* api = nsreq[@"api"];
-    if ([api isEqualToString:@"get_conf"]) {
+    if ([api isEqualToString:@"get_service_status"]) {
+        return @{@"status":@0, @"data":g_service_diagnostics.state ?: @{}};
+    } else if ([api isEqualToString:@"get_conf"]) {
         NSString* key = nsreq[@"key"];
         if (key == nil) {
             NSMutableDictionary* kv = [getAllKV() mutableCopy];
@@ -764,13 +806,19 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
     } else if ([api isEqualToString:@"set_conf"]) {
         NSString* key = nsreq[@"key"];
         id val = nsreq[@"val"];
+        if ([key isEqualToString:@"action"]) val = @"";
         if ([key isEqualToString:@"floatwnd"]) {
             g_enable_floatwnd = [val boolValue];
             showFloatwnd(g_enable_floatwnd);
         } else if ([key isEqualToString:@"ppm_simulate_mode"]) {
             setPPMSimulationMode(val);
         } else {
-            setlocalKV(key, val);
+            if ([key isEqualToString:@"temp_mode"] && [nsreq[@"vals"] count] == 2) {
+                NSArray* values = nsreq[@"vals"];
+                NSError* error = nil;
+                if (!CLWriteConfigurationValues(@{key:val, @"charge_temp_below":values[0], @"charge_temp_above":values[1]}, &error)) return @{@"status":@-20, @"error":error.localizedDescription ?: @"配置保存失败"};
+            } else if (!setlocalKV(key, val)) return @{@"status":@-20, @"error":@"配置保存失败，原配置已保留。"};
+            NSFileLog(@"configuration changed %@=%@", key, val);
         }
         if ([key isEqualToString:@"enable"]) {
             g_enable = [val boolValue];
@@ -784,26 +832,18 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                     }
                 }
             }
-        } else if ([key isEqualToString:@"action"]) {
-            if ([val isEqualToString:@"noti"]) {
-                [Service.inst initLocalPush];
-            }
         } else if ([key isEqualToString:@"adv_predictive_inhibit_charge"]) {
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_prefer_smart"]) {
+            g_exit_reason = @"battery source configuration changed";
+            NSFileLog(@"service restart requested: battery source configuration changed");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), ^{
                 exit(0);
             });
         } else if ([key isEqualToString:@"adv_def_thermal_mode"]) {
             setThermalSimulationMode(val);
-        } else if ([key isEqualToString:@"temp_mode"]) {
-            NSArray* vals = nsreq[@"vals"];
-            if (vals != nil && vals.count >= 2) {
-                setlocalKV(@"charge_temp_below", vals[0]);
-                setlocalKV(@"charge_temp_above", vals[1]);
-            }
         }
         return @{
             @"status": @0,
@@ -814,10 +854,15 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"status": @0,
         };
     } else if ([api isEqualToString:@"get_bat_info"]) {
+        if (getBatInfo(&bat_info) != 0) return @{@"status":@-2, @"error":@"电池状态读取失败"};
+        observeBatteryReport(bat_info);
         if (gUPSPS.props != nil) {
             return @{
                 @"status": @0,
+                @"enable": @(g_enable),
                 @"data": bat_info,
+                @"charging_explanation": chargingExplanation(bat_info),
+                @"charge_diagnostics": [g_charge_diagnostics stateAtUptime:NSProcessInfo.processInfo.systemUptime],
                 @"data_ups": gUPSPS.props,
             };
         }
@@ -825,7 +870,31 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"status": @0,
             @"enable": @(g_enable), // for floatwnd
             @"data": bat_info,
+            @"charging_explanation": chargingExplanation(bat_info),
+            @"charge_diagnostics": [g_charge_diagnostics stateAtUptime:NSProcessInfo.processInfo.systemUptime],
         };
+    } else if ([api isEqualToString:@"get_saved_conf"]) {
+        NSError* error = nil;
+        NSDictionary* saved = CLReadConfiguration(&error);
+        return saved ? @{@"status":@0, @"data":saved} : @{@"status":@-20, @"error":error.localizedDescription ?: @"配置读取失败"};
+    } else if ([api isEqualToString:@"get_storage_info"]) {
+        return @{@"status":@0, @"data":CLStorageInfo()};
+    } else if ([api isEqualToString:@"get_log"]) {
+        NSError* error = nil;
+        NSString* log = CLReadLogTail(256 * 1024, &error);
+        return log ? @{@"status":@0, @"data":log, @"path":@LOG_PATH} : @{@"status":@-20, @"error":error.localizedDescription ?: @"读取日志失败"};
+    } else if ([api isEqualToString:@"export_diagnostics"]) {
+        NSError* error = nil;
+        NSDictionary* sample = nil;
+        if (getBatInfo(&sample) != 0) sample = @{};
+        observeBatteryReport(sample);
+        NSMutableDictionary* snapshot = [sample mutableCopy];
+        snapshot[@"ChargingExplanation"] = chargingExplanation(sample);
+        snapshot[@"ChargeDiagnostics"] = [g_charge_diagnostics stateAtUptime:NSProcessInfo.processInfo.systemUptime];
+        NSDictionary* result = CLCreateExport(snapshot, &error);
+        if (!result) return @{@"status":@-20, @"error":error.localizedDescription ?: @"导出失败"};
+        NSFileLog(@"diagnostics exported to %@", result[@"directory"]);
+        return @{@"status":@0, @"data":result};
     } else if ([api isEqualToString:@"get_statistics"]) {
         NSDictionary* conf = nsreq[@"conf"];
         NSMutableDictionary* data = [NSMutableDictionary dictionary];
@@ -843,6 +912,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         NSNumber* flag = nsreq[@"flag"];
         getBatInfo(&bat_info);
         int status = setChargeStatus(flag.boolValue);
+        NSFileLog(@"manual charging=%d result=%d", flag.boolValue, status);
         return @{
             @"status": @(status)
         };
@@ -850,6 +920,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         NSNumber* flag = nsreq[@"flag"];
         getBatInfo(&bat_info);
         int status = setInflowStatus(flag.boolValue);
+        NSFileLog(@"manual inflow=%d result=%d", flag.boolValue, status);
         return @{
             @"status": @(status)
         };
@@ -1084,6 +1155,7 @@ void detectUPSBattery() {
     @autoreleasepool {
         for (LSApplicationProxy* proxy in list) {
             if ([proxy.bundleIdentifier isEqualToString:self->bid]) {
+                g_exit_reason = @"app uninstalled";
                 NSFileLog(@"uninstalled, exit"); // 卸载时旧版daemon自动退出
                 exit(0);
             }
@@ -1093,6 +1165,7 @@ void detectUPSBattery() {
 - (void)applicationsDidInstall:(NSArray<LSApplicationProxy*>*)list {
     for (LSApplicationProxy* proxy in list) {
         if ([proxy.bundleIdentifier isEqualToString:self->bid]) {
+            g_exit_reason = @"app updated";
             NSFileLog(@"updated, exit"); // 覆盖安装时旧版daemon自动退出
             exit(0);
         }
@@ -1103,39 +1176,38 @@ void detectUPSBattery() {
     self->bid = NSBundle.mainBundle.bundleIdentifier;
     return self;
 }
-- (void)initLocalPush {
-    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
-    center.delegate = self;
-    // getNotificationSettingsWithCompletionHandler返回结果不准确,忽略
-    [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge completionHandler:^(BOOL granted, NSError* error) {
-    }];
-}
-- (void)localPush:(NSString*)title msg:(NSString*)msg {
-    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
-    UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
-    content.title = title;
-    content.body = msg;
-    content.sound = UNNotificationSound.defaultSound;
-    NSTimeInterval timeInterval = [[NSDate dateWithTimeIntervalSinceNow:1] timeIntervalSinceNow];
-    UNTimeIntervalNotificationTrigger* trigger = [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:timeInterval repeats:NO];
-    UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:title content:content trigger:trigger];
-    [center addNotificationRequest:request withCompletionHandler:nil];
-}
 - (void)serve {
+    // Best effort cleanup for an existing installation; notification support
+    // must never prevent the charging service from starting.
+    if ([getlocalKV(@"action") isEqualToString:@"noti"]) {
+        @try {
+            [UNUserNotificationCenter.currentNotificationCenter removePendingNotificationRequestsWithIdentifiers:@[@PRODUCT]];
+        } @catch (NSException* exception) {
+            NSFileLog(@"obsolete notification cleanup unavailable: %@", exception.reason);
+        }
+    }
     initConf(NO);
     initDB(nil);
     static GCDWebServer* _webServer = nil;
     if (_webServer == nil) {
         if (localPortOpen(GSERV_PORT)) {
-            NSLog(@"%@ already served, exit", log_prefix);
+            NSFileLog(@"service already running; duplicate startup exiting");
             exit(0); // 服务已存在,退出
         }
         _webServer = [GCDWebServer new];
         NSString* html_root = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"www"];
         [_webServer addGETHandlerForBasePath:@"/" directoryPath:html_root indexFilename:@"index.html" cacheAge:1 allowRangeRequests:NO];
+        [_webServer addGETHandlerForBasePath:@"/exports/" directoryPath:[@CL_DATA_DIRECTORY stringByAppendingPathComponent:@"Exports"] indexFilename:nil cacheAge:0 allowRangeRequests:YES];
         [_webServer addDefaultHandlerForMethod:@"POST" requestClass:GCDWebServerDataRequest.class processBlock:^GCDWebServerResponse*(GCDWebServerDataRequest* request) {
             @autoreleasepool {
-                NSDictionary* nsres = handleReq(request.jsonObject);
+                // UIKit/private APIs, battery state and SQLite all belong to the daemon main thread.
+                __block NSDictionary* nsres = nil;
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    @autoreleasepool {
+                        if ([request.jsonObject isKindOfClass:NSDictionary.class]) nsres = handleReq(request.jsonObject);
+                        else nsres = @{@"status":@-10, @"error":@"Invalid request"};
+                    }
+                });
                 return [GCDWebServerDataResponse responseWithJSONObject:nsres];
             }
         }];
@@ -1145,10 +1217,14 @@ void detectUPSBattery() {
         };
         BOOL status = [_webServer startWithOptions:options error:nil];
         if (!status) {
-            NSLog(@"%@ serve failed, exit", log_prefix);
-            exit(0);
+            g_exit_reason = @"HTTP server startup failed";
+            NSFileLog(@"service startup failed: HTTP server could not start");
+            exit(1);
         }
-        getBatInfo(&bat_info);
+        if (getBatInfo(&bat_info) == 0) {
+            control_bat_info = bat_info;
+            observeBatteryReport(bat_info);
+        } else NSFileLog(@"initial battery read failed");
         gNotifyPort = IONotificationPortCreate(kIOMasterPortDefault);
         CFRunLoopSourceRef runSrc = IONotificationPortGetRunLoopSource(gNotifyPort);
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runSrc, kCFRunLoopDefaultMode);
@@ -1162,6 +1238,23 @@ void detectUPSBattery() {
             }, nil, &iopmpsNoti);
             detectUPSBattery();
         }
+        __block NSTimeInterval lastSummary = 0;
+        g_diagnostics_timer = [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer* timer) {
+            @autoreleasepool {
+            NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+            [g_service_diagnostics heartbeatAtTime:now];
+            persistServiceState();
+            NSDictionary* sample = nil;
+            if (getBatInfo(&sample) == 0) {
+                bat_info = sample;
+                observeBatteryReport(sample);
+            } else observeBatteryReport(@{});
+            if (lastSummary == 0 || NSProcessInfo.processInfo.systemUptime - lastSummary >= 60) {
+                NSFileLog(@"service heartbeat pid=%d IsCharging=%@ capacity=%@%% amperage=%@mA batteryUpdateTime=%@", getpid(), sample[@"IsCharging"] ?: @"unknown", sample[@"CurrentCapacity"] ?: @"unknown", sample[@"Amperage"] ?: @"unknown", sample[@"UpdateTime"] ?: @"unknown");
+                lastSummary = NSProcessInfo.processInfo.systemUptime;
+            }
+            }
+        }];
         [LSApplicationWorkspace.defaultWorkspace addObserver:self];
         isBlueEnable(); // init
         isLPMEnable();
@@ -1173,8 +1266,21 @@ void detectUPSBattery() {
 
 int main(int argc, char** argv) { // daemon_main
     @autoreleasepool {
+        NSError* storageError = nil;
+        if (!CLInitializeStorage(&storageError) || !CLReadConfiguration(&storageError)) {
+            NSLog2(@"Persistent storage unavailable; existing files preserved: %@", storageError);
+            NSFileLog(@"service startup failed: persistent storage unavailable; existing files preserved: %@", storageError);
+            return 1;
+        }
         g_jbtype = getJBType();
         if (argc == 1) {
+            if (localPortOpen(GSERV_PORT)) {
+                NSFileLog(@"service already running; duplicate startup exiting");
+                return 0;
+            }
+            g_service_diagnostics = [CLServiceDiagnostics new];
+            logDiagnosticLines([g_service_diagnostics startWithPID:getpid() systemBoot:get_sys_boottime() atTime:NSDate.date.timeIntervalSince1970]);
+            persistServiceState();
             NSFileLog(@"CLv%@ start pid=%d", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"], getpid());
             g_serv_boot = (int)time(0);
             if (g_jbtype == JBTYPE_TROLLSTORE) {
@@ -1183,9 +1289,15 @@ int main(int argc, char** argv) { // daemon_main
             } else {
                 platformize_me(); // for jailbreak
                 set_mem_limit(getpid(), 80);
+                installExitSignal(SIGTERM, &g_term_source);
+                installExitSignal(SIGINT, &g_int_source);
+                installExitSignal(SIGHUP, &g_hup_source);
             }
-            [Service.inst serve];
             atexit_b(^{
+                [g_diagnostics_timer invalidate];
+                [g_service_diagnostics stopWithReason:g_exit_reason atTime:NSDate.date.timeIntervalSince1970];
+                persistServiceState();
+                NSFileLog(@"service exit pid=%d reason=%@", getpid(), g_exit_reason);
                 resetBatteryStatus();
                 if (iopmpsNoti != IO_OBJECT_NULL) {
                     IOObjectRelease(iopmpsNoti);
@@ -1200,8 +1312,10 @@ int main(int argc, char** argv) { // daemon_main
                 uninitDB();
                 [LSApplicationWorkspace.defaultWorkspace removeObserver:Service.inst];
             });
+            [Service.inst serve];
             [NSRunLoop.mainRunLoop run];
-            NSFileLog(@"daemon unexpected");
+            g_exit_reason = @"main runloop returned unexpectedly";
+            NSFileLog(@"daemon unexpected: main runloop returned");
             return 0;
         } else if (argc > 1) {
             if (0 == strcmp(argv[1], "reset")) { // 越狱下卸载前重置

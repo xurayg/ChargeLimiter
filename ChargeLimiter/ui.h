@@ -3,7 +3,7 @@
 
 #include "common.h"
 
-#import <JavaScriptCore/JavaScriptCore.h>
+#include "NativeUI.h"
 
 extern "C" {
 void BKSDisplayServicesStart();
@@ -35,9 +35,9 @@ void UIApplicationInitialize();
 - (void)setHandler:(void(^)(FBSOrientationUpdate*))handler;
 @end
 
-@interface AppDelegate : UIViewController<UIApplicationDelegate, UIWindowSceneDelegate, UIWebViewDelegate>
+@interface AppDelegate : UIViewController<UIApplicationDelegate, UIWindowSceneDelegate>
 @property(strong, nonatomic) UIWindow* window;
-@property(retain) UIWebView* webview;
+@property(strong, nonatomic) CLNativeHUD* hudView;
 @end
 
 @interface HUDMainWindow: UIWindow
