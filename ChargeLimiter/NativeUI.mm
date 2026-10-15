@@ -228,35 +228,139 @@ static void CLDownloadExport(UIViewController* controller, NSDictionary* exportI
 @implementation CLSettingSwitch
 @end
 
-@interface CLHistoryChart : UIView
+@interface CLHistoryChart : UIView <UIGestureRecognizerDelegate>
 @property(strong) NSArray* samples;
 @property(copy) NSString* metric;
+- (void)resetZoom;
 @end
-@implementation CLHistoryChart
+@implementation CLHistoryChart {
+    double visibleStart, visibleEnd; // 0 表示显示全部
+    double gestureStart, gestureEnd, gestureAnchor;
+    UIPanGestureRecognizer* pan;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.contentMode = UIViewContentModeRedraw;
+        [self addGestureRecognizer:[[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(pinched:)]];
+        pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
+        pan.maximumNumberOfTouches = 1;
+        pan.delegate = self;
+        [self addGestureRecognizer:pan];
+        UITapGestureRecognizer* doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(resetZoom)];
+        doubleTap.numberOfTapsRequired = 2;
+        [self addGestureRecognizer:doubleTap];
+    }
+    return self;
+}
+- (CGRect)plotRect {
+    return CGRectMake(48, 22, MAX(1, self.bounds.size.width - 66), MAX(1, self.bounds.size.height - 58));
+}
+- (void)fullFirst:(double*)first last:(double*)last {
+    *first = DBL_MAX; *last = -DBL_MAX;
+    for (NSDictionary* sample in self.samples) {
+        if (!sample[self.metric]) continue;
+        double time = [sample[@"UpdateTime"] doubleValue];
+        *first = MIN(*first, time); *last = MAX(*last, time);
+    }
+}
+- (BOOL)zoomed {
+    return visibleEnd > visibleStart;
+}
+- (void)resetZoom {
+    visibleStart = visibleEnd = 0;
+    [self setNeedsDisplay];
+}
+// 缩放区间限制在数据范围内, 最多放大到全部跨度的 1/64(不少于 2 分钟)
+- (void)setWindowStart:(double)start end:(double)end {
+    double first, last;
+    [self fullFirst:&first last:&last];
+    double full = last - first;
+    if (full <= 0) return;
+    double span = MIN(full, MAX(end - start, MAX(full / 64, 120)));
+    start = MIN(MAX(start, first), last - span);
+    if (span >= full * 0.999) visibleStart = visibleEnd = 0;
+    else { visibleStart = start; visibleEnd = start + span; }
+    [self setNeedsDisplay];
+}
+- (void)currentWindowStart:(double*)start end:(double*)end {
+    double first, last;
+    [self fullFirst:&first last:&last];
+    if (self.zoomed) { *start = visibleStart; *end = visibleEnd; }
+    else { *start = first; *end = last; }
+}
+// 手势期间禁止外层列表滚动, 避免捏合时页面上下跳动
+- (void)setEnclosingScrollEnabled:(BOOL)enabled {
+    for (UIView* view = self.superview; view; view = view.superview) {
+        if ([view isKindOfClass:UIScrollView.class]) { ((UIScrollView*)view).scrollEnabled = enabled; return; }
+    }
+}
+- (double)fractionAtX:(CGFloat)x {
+    CGRect plot = self.plotRect;
+    return MIN(1, MAX(0, (x - plot.origin.x) / plot.size.width));
+}
+// 以两指中心对应的时间为锚点缩放; 中心移动时锚点跟随手指, 实现边缩放边平移
+- (void)pinched:(UIPinchGestureRecognizer*)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        [self currentWindowStart:&gestureStart end:&gestureEnd];
+        gestureAnchor = gestureStart + (gestureEnd - gestureStart) * [self fractionAtX:[gesture locationInView:self].x];
+        [self setEnclosingScrollEnabled:NO];
+    } else if (gesture.state == UIGestureRecognizerStateChanged && gestureEnd > gestureStart) {
+        double span = (gestureEnd - gestureStart) / MAX(0.01, gesture.scale);
+        double start = gestureAnchor - span * [self fractionAtX:[gesture locationInView:self].x];
+        [self setWindowStart:start end:start + span];
+    } else if (gesture.state >= UIGestureRecognizerStateEnded) {
+        [self setEnclosingScrollEnabled:YES];
+    }
+}
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer*)gesture {
+    if (gesture != pan) return YES;
+    CGPoint velocity = [pan velocityInView:self];
+    return self.zoomed && fabs(velocity.x) > fabs(velocity.y);
+}
+- (void)panned:(UIPanGestureRecognizer*)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) [self currentWindowStart:&gestureStart end:&gestureEnd];
+    if (gesture.state == UIGestureRecognizerStateChanged) {
+        double shift = -[gesture translationInView:self].x / self.plotRect.size.width * (gestureEnd - gestureStart);
+        [self setWindowStart:gestureStart + shift end:gestureEnd + shift];
+    }
+}
+// 按可见跨度选择刻度间隔, 每个标签约占 40pt
+static double CLTickStep(double span, CGFloat width) {
+    NSUInteger maxTicks = MAX(2, (NSUInteger)(width / 40));
+    const double steps[] = {60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 14400, 21600, 43200, 86400, 172800, 345600, 604800, 1209600, 2592000, 7776000, 15552000, 31536000};
+    for (double step : steps) if (span / step <= maxTicks) return step;
+    return 31536000;
+}
 - (void)drawRect:(CGRect)rect {
     [super drawRect:rect];
-    CGRect plot = CGRectInset(self.bounds, 40, 30);
-    plot.origin.x = 48;
-    plot.size.width = MAX(1, self.bounds.size.width - 66);
-    double minimum = [self.metric isEqualToString:@"CurrentCapacity"] ? 0 : DBL_MAX;
-    double maximum = [self.metric isEqualToString:@"CurrentCapacity"] ? 100 : -DBL_MAX;
+    CGRect plot = self.plotRect;
+    BOOL capacity = [self.metric isEqualToString:@"CurrentCapacity"];
+    double windowStart, windowEnd;
+    [self currentWindowStart:&windowStart end:&windowEnd];
+    double minimum = capacity ? 0 : DBL_MAX;
+    double maximum = capacity ? 100 : -DBL_MAX;
     NSMutableArray* values = [NSMutableArray new];
     for (NSDictionary* sample in self.samples) {
         NSNumber* raw = sample[self.metric];
         if (!raw) continue;
         double value = raw.doubleValue / ([self.metric isEqualToString:@"Temperature"] ? 100 : 1);
         if (!isfinite(value)) continue;
-        [values addObject:@{@"value":@(value), @"time":sample[@"UpdateTime"] ?: @0}];
-        minimum = MIN(minimum, value);
-        maximum = MAX(maximum, value);
+        double time = [sample[@"UpdateTime"] doubleValue];
+        [values addObject:@{@"value":@(value), @"time":@(time)}];
+        if (time >= windowStart && time <= windowEnd) { // 纵轴范围按可见数据计算, 放大后细节更清楚
+            minimum = MIN(minimum, value);
+            maximum = MAX(maximum, value);
+        }
     }
+    [values sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) { return [a[@"time"] compare:b[@"time"]]; }];
     if (!values.count) {
         [CLText(@"暂无图表数据", @"No chart data") drawAtPoint:CGPointMake(48, 90) withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:15], NSForegroundColorAttributeName:CLForeground()}];
         return;
     }
+    if (minimum > maximum) { minimum = maximum = [values.firstObject[@"value"] doubleValue]; }
     if (maximum <= minimum) { minimum -= 1; maximum += 1; }
     UIColor* gridColor = [UIColor colorWithWhite:0.5 alpha:0.2];
-    NSDictionary* textStyle = @{NSFontAttributeName:[UIFont systemFontOfSize:11], NSForegroundColorAttributeName:CLForeground()};
+    NSDictionary* textStyle = @{NSFontAttributeName:[UIFont systemFontOfSize:10], NSForegroundColorAttributeName:CLForeground()};
     for (int i = 0; i <= 4; i++) {
         CGFloat y = CGRectGetMaxY(plot) - plot.size.height * i / 4;
         UIBezierPath* grid = [UIBezierPath bezierPath];
@@ -264,29 +368,95 @@ static void CLDownloadExport(UIViewController* controller, NSDictionary* exportI
         [grid addLineToPoint:CGPointMake(CGRectGetMaxX(plot), y)];
         [gridColor setStroke];
         [grid stroke];
-        [[NSString stringWithFormat:@"%.0f", minimum + (maximum - minimum) * i / 4] drawAtPoint:CGPointMake(5, y - 7) withAttributes:textStyle];
+        [[NSString stringWithFormat:maximum - minimum < 8 ? @"%.1f" : @"%.0f", minimum + (maximum - minimum) * i / 4] drawAtPoint:CGPointMake(5, y - 7) withAttributes:textStyle];
     }
-    double firstTime = [values.firstObject[@"time"] doubleValue];
-    double lastTime = [values.lastObject[@"time"] doubleValue];
-    UIBezierPath* line = [UIBezierPath bezierPath];
-    for (NSUInteger i = 0; i < values.count; i++) {
-        double position = lastTime > firstTime ? ([values[i][@"time"] doubleValue] - firstTime) / (lastTime - firstTime) : (double)i / MAX(1, values.count - 1);
-        CGPoint point = CGPointMake(plot.origin.x + plot.size.width * position, CGRectGetMaxY(plot) - plot.size.height * ([values[i][@"value"] doubleValue] - minimum) / (maximum - minimum));
-        if (i == 0) [line moveToPoint:point]; else [line addLineToPoint:point];
-        if (values.count == 1) {
-            [UIColor.systemBlueColor setFill];
-            [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(point.x - 3, point.y - 3, 6, 6)] fill];
+    double span = windowEnd - windowStart;
+    CGFloat (^xForTime)(double) = ^CGFloat(double time) {
+        return plot.origin.x + plot.size.width * (span > 0 ? (time - windowStart) / span : 0.5);
+    };
+    // X 轴刻度: 对齐本地时间整点; 跨天时第二行显示日期
+    if (span > 0) {
+        double step = CLTickStep(span, plot.size.width);
+        NSCalendar* calendar = NSCalendar.currentCalendar;
+        NSDateFormatter* timeFormat = [NSDateFormatter new];
+        NSDateFormatter* dayFormat = [NSDateFormatter new];
+        timeFormat.dateFormat = step >= 2592000 ? @"yyyy/MM" : step >= 86400 ? @"MM/dd" : @"HH:mm";
+        dayFormat.dateFormat = @"MM/dd";
+        NSMutableArray<NSNumber*>* ticks = [NSMutableArray new];
+        if (step >= 2592000) { // 按自然月对齐
+            NSInteger months = MAX(1, (NSInteger)llround(step / 2592000));
+            NSDateComponents* parts = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:[NSDate dateWithTimeIntervalSince1970:windowStart]];
+            NSDate* tick = [calendar dateFromComponents:parts];
+            while (tick.timeIntervalSince1970 <= windowEnd && ticks.count < 64) {
+                if (tick.timeIntervalSince1970 >= windowStart) [ticks addObject:@(tick.timeIntervalSince1970)];
+                NSDateComponents* add = [NSDateComponents new]; add.month = months;
+                tick = [calendar dateByAddingComponents:add toDate:tick options:0];
+            }
+        } else {
+            double offset = [NSTimeZone.localTimeZone secondsFromGMTForDate:[NSDate dateWithTimeIntervalSince1970:windowStart]];
+            for (double tick = ceil((windowStart + offset) / step) * step - offset; tick <= windowEnd && ticks.count < 64; tick += step) [ticks addObject:@(tick)];
+        }
+        NSInteger lastDay = NSIntegerMin;
+        CGFloat lastLabelEnd = -CGFLOAT_MAX;
+        for (NSNumber* tickTime in ticks) {
+            CGFloat x = xForTime(tickTime.doubleValue);
+            UIBezierPath* grid = [UIBezierPath bezierPath];
+            [grid moveToPoint:CGPointMake(x, plot.origin.y)];
+            [grid addLineToPoint:CGPointMake(x, CGRectGetMaxY(plot) + 3)];
+            [gridColor setStroke];
+            [grid stroke];
+            NSDate* date = [NSDate dateWithTimeIntervalSince1970:tickTime.doubleValue];
+            NSString* label = [timeFormat stringFromDate:date];
+            CGSize size = [label sizeWithAttributes:textStyle];
+            CGFloat labelX = MIN(MAX(x - size.width / 2, plot.origin.x - 20), self.bounds.size.width - size.width - 2);
+            if (labelX < lastLabelEnd + 4) continue;
+            [label drawAtPoint:CGPointMake(labelX, CGRectGetMaxY(plot) + 5) withAttributes:textStyle];
+            lastLabelEnd = labelX + size.width;
+            NSInteger day = [calendar ordinalityOfUnit:NSCalendarUnitDay inUnit:NSCalendarUnitEra forDate:date];
+            if (step < 86400 && day != lastDay) {
+                [[dayFormat stringFromDate:date] drawAtPoint:CGPointMake(labelX, CGRectGetMaxY(plot) + 18) withAttributes:textStyle];
+                lastDay = day;
+            }
         }
     }
+    UIBezierPath* line = [UIBezierPath bezierPath];
+    BOOL started = NO;
+    NSUInteger visibleCount = 0;
+    for (NSUInteger i = 0; i < values.count; i++) {
+        double time = [values[i][@"time"] doubleValue];
+        // 保留可见区间两侧各一个点, 线条在边缘处连续
+        BOOL nearWindow = (time >= windowStart && time <= windowEnd)
+            || (i + 1 < values.count && time < windowStart && [values[i + 1][@"time"] doubleValue] >= windowStart)
+            || (i > 0 && time > windowEnd && [values[i - 1][@"time"] doubleValue] <= windowEnd);
+        if (!nearWindow) continue;
+        if (time >= windowStart && time <= windowEnd) visibleCount++;
+        CGPoint point = CGPointMake(xForTime(time), CGRectGetMaxY(plot) - plot.size.height * ([values[i][@"value"] doubleValue] - minimum) / (maximum - minimum));
+        if (!started) [line moveToPoint:point]; else [line addLineToPoint:point];
+        started = YES;
+    }
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    CGContextSaveGState(context);
+    UIRectClip(CGRectInset(plot, -3, -3));
     [UIColor.systemBlueColor setStroke];
     line.lineWidth = 2;
     [line stroke];
-    NSDateFormatter* date = [NSDateFormatter new];
-    date.dateFormat = @"MM/dd HH:mm";
-    [[date stringFromDate:[NSDate dateWithTimeIntervalSince1970:firstTime]] drawAtPoint:CGPointMake(plot.origin.x, CGRectGetMaxY(plot) + 8) withAttributes:textStyle];
-    NSString* last = [date stringFromDate:[NSDate dateWithTimeIntervalSince1970:lastTime]];
-    [last drawAtPoint:CGPointMake(CGRectGetMaxX(plot) - [last sizeWithAttributes:textStyle].width, CGRectGetMaxY(plot) + 8) withAttributes:textStyle];
-    self.accessibilityLabel = [NSString stringWithFormat:CLText(@"趋势图，%lu 条记录，最低 %.1f，最高 %.1f", @"Trend, %lu records, minimum %.1f, maximum %.1f"), (unsigned long)values.count, minimum, maximum];
+    // 放大到点数较少时显示数据点
+    if (visibleCount <= 40) {
+        [UIColor.systemBlueColor setFill];
+        for (NSDictionary* value in values) {
+            double time = [value[@"time"] doubleValue];
+            if (time < windowStart || time > windowEnd) continue;
+            CGPoint point = CGPointMake(xForTime(time), CGRectGetMaxY(plot) - plot.size.height * ([value[@"value"] doubleValue] - minimum) / (maximum - minimum));
+            [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(point.x - 2.5, point.y - 2.5, 5, 5)] fill];
+        }
+    }
+    CGContextRestoreGState(context);
+    NSString* hint = self.zoomed ? [NSString stringWithFormat:CLText(@"已放大 ×%.1f · 双击还原", @"Zoom ×%.1f · double-tap to reset"), ([values.lastObject[@"time"] doubleValue] - [values.firstObject[@"time"] doubleValue]) / MAX(1, span)] : (values.count > 1 ? CLText(@"双指缩放查看细节", @"Pinch to zoom") : nil);
+    if (hint) {
+        NSDictionary* hintStyle = @{NSFontAttributeName:[UIFont systemFontOfSize:10], NSForegroundColorAttributeName:[CLForeground() colorWithAlphaComponent:0.6]};
+        [hint drawAtPoint:CGPointMake(CGRectGetMaxX(plot) - [hint sizeWithAttributes:hintStyle].width, 4) withAttributes:hintStyle];
+    }
+    self.accessibilityLabel = [NSString stringWithFormat:CLText(@"趋势图，%lu 条记录，最低 %.1f，最高 %.1f", @"Trend, %lu records, minimum %.1f, maximum %.1f"), (unsigned long)visibleCount, minimum, maximum];
 }
 @end
 
@@ -415,6 +585,7 @@ static NSDictionary* CLRow(NSString* title, NSString* key, NSString* type) {
 }
 - (void)changeHistory:(UISegmentedControl*)control {
     self.historyPeriod = control.selectedSegmentIndex;
+    [self.chart resetZoom];
     [self.chartSelector removeAllSegments];
     NSArray* labels = self.historyPeriod < 2 ? @[CLText(@"电量 %", @"Capacity %"), CLText(@"温度 °C", @"Temperature °C"), CLText(@"电流 mA", @"Current mA")] : @[CLText(@"容量 mAh", @"Capacity mAh"), CLText(@"循环次数", @"Cycles")];
     for (NSUInteger i = 0; i < labels.count; i++) [self.chartSelector insertSegmentWithTitle:labels[i] atIndex:i animated:NO];
